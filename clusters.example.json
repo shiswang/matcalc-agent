@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "default_node": "example",
+  "local_potcar_lib": "potcars/potpaw_PBE",
+  "_meta": "示例集群配置（脱敏模板）。真实使用时复制为项目根 clusters.json 并填入自己的机器字段；该文件本身仅用于 CI 与新机初始化，绝不包含真实地址与密钥路径。",
+  "nodes": {
+    "example": {
+      "host": "user@example.invalid",
+      "port": 22,
+      "ssh_key": "~/.ssh/id_ed25519",
+      "scheduler": "torque",
+      "queue": "workq",
+      "max_ppn": 64,
+      "vasp_setup": "module load apps/vasp/6.4.0",
+      "vasp_exe": "vasp_std",
+      "vasp_version": "6.4.0",
+      "lammps_exe": null,
+      "workroot": "~/matcalc",
+      "notes": [
+        "占位节点：CI / 新环境引导用"
+      ]
+    }
+  }
+}

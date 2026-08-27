@@ -1,0 +1,7 @@
+# MatCalcAgent 运行依赖（CI 与本地一致；版本下限按实测兼容窗口）
+fastmcp>=2.0
+pymatgen>=2025.0
+ase>=3.24
+matplotlib>=3.8
+numpy>=1.26
+pytest>=8.0

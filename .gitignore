@@ -1,0 +1,24 @@
+# ---- 环境与依赖（可重建）----
+.venv/
+__pycache__/
+*.pyc
+
+# ---- 计算产物（大且可再生；只留代码不留数据）----
+server/outputs/
+
+# ---- 版权资产：POTCAR 赝势库严禁上传 GitHub ----
+potcars/
+
+# ---- pytest 运行临时目录 ----
+.pytest_tmp*/
+.pytest_cache/
+
+# ---- 敏感项双保险：集群私钥路径不入库（clusters.json 本身无凭据）----
+*.key
+id_rsa*
+.ssh/
+
+# 群集配置含 IP/用户名，属内网事实——决定是否公开仓库时需脱敏审查
+clusters.json
+CLUSTERS.md
+remote_workdir_notes.md

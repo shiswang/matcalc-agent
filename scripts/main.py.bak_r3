@@ -1,0 +1,981 @@
+"""MatCalcAgent MCP Server（M1 里程碑）。
+
+确定性工具层（Python / pymatgen / ASE）：
+- build_structure:      由化学式生成晶体结构（原型建模：rocksalt/perovskite/zincblende/
+                        fluorite/bcc/fcc/hcp；或初始粗略结构；可选晶格参数与空间群校验）
+- parse_poscar:         解析 POSCAR 文本，返回结构摘要
+- visualize_structure:  3D 球棍图渲染（matplotlib，PNG）
+- generate_vasp_inputs: VASP 输入文件生成（INCAR 按计算类型 / KPOINTS 自动网格 /
+                        POTCAR 拼接脚本 + 元素与参数校验）
+
+运行方式（stdio 传输）：
+    .venv\\Scripts\\python.exe server\\main.py
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import subprocess
+import time
+from typing import Optional
+
+import matplotlib
+
+matplotlib.use("Agg")  # 无 GUI 环境（headless 会话）需要非交互后端
+import matplotlib.pyplot as plt  # noqa: E402
+from mcp.server.fastmcp import FastMCP
+from pymatgen.core import Composition, Element, Structure
+from pymatgen.core.lattice import Lattice
+from pymatgen.io.vasp import Poscar
+from pymatgen.symmetry.groups import SpaceGroup
+
+try:  # 兼容 python server/main.py（脚本）与 from server import main（包）两种运行方式
+    from . import remote  # type: ignore[no-redef]
+except ImportError:  # pragma: no cover
+    import remote  # type: ignore[no-redef]
+
+mcp = FastMCP("matcalc-agent")
+
+
+# ══════════ M5-R2: 工具实现已迁至 matcalc 包，此处仅组装注册（行为不变） ══════════
+
+try:  # 兼容 python server/main.py（脚本）与 from server import main（包）两种运行方式
+    from .matcalc import analysis, organize, parsing, plotting, structures, visualize
+except ImportError:  # pragma: no cover
+    from matcalc import analysis, organize, parsing, plotting, structures, visualize
+
+for _fn in (
+    structures.build_structure, structures.parse_poscar,
+    structures.make_supercell, structures.cleave_surface,
+    visualize.visualize_structure,
+    parsing.parse_vasp_output, parsing.diagnose_vasp_error,
+    parsing.analyze_vasprun, parsing.parse_bader_acf,
+    plotting.plot_dos, plotting.plot_pdos, plotting.plot_band,
+    analysis.fit_eos,
+    organize.organize_outputs, organize.export_report,
+):
+    mcp.tool()(_fn)
+
+_OUTPUTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs")
+
+_KIND_DIRS = {
+    "structure": "structures",   # 建模/可视化
+    "input": "inputs",           # 计算输入集
+    "dos": "dos_pdos",           # DOS/PDOS 图与数据
+    "result": "results",         # 解析产物（能带图等）
+    "report": "reports",         # 报告
+}
+
+
+def _out_dir(project: Optional[str] = None, kind: Optional[str] = None) -> str:
+    """输出目录：outputs/[<project>/][<kind>/]，自动创建。project 为空时保持根目录散放（兼容旧行为）。"""
+    base = _OUTPUTS_DIR
+    if project:
+        base = os.path.join(base, project.strip("/\\"))
+        if kind:
+            base = os.path.join(base, _KIND_DIRS.get(kind, kind))
+    os.makedirs(base, exist_ok=True)
+    return base
+# 计算类型 → INCAR 关键参数模板
+_INCAR_TEMPLATES: dict[str, dict] = {
+    "relax": {
+        "IBRION": 2, "ISIF": 3, "NSW": 100, "EDIFFG": -0.02,
+        "ISMEAR": None, "SIGMA": 0.1,
+    },
+    "static": {
+        "IBRION": -1, "ISIF": 2, "NSW": 0, "EDIFFG": None,
+        "ISMEAR": None, "SIGMA": 0.05,
+    },
+    "bands": {
+        "IBRION": -1, "ISIF": 2, "NSW": 0, "EDIFFG": None,
+        "ISMEAR": None, "SIGMA": 0.05, "LORBIT": 11,
+    },
+    "dos": {
+        "IBRION": -1, "ISIF": 2, "NSW": 0, "EDIFFG": None,
+        "ISMEAR": None, "SIGMA": 0.05, "LORBIT": 11, "NEDOS": 2000,
+    },
+    "elastic": {
+        "IBRION": 6, "ISIF": 3, "NSW": 1, "EDIFFG": None,
+        "ISMEAR": None, "SIGMA": 0.1, "NFREE": 4,
+    },
+}
+
+# 常见金属元素（用于 ISMEAR 建议）
+_METALS = {
+    "Li", "Na", "K", "Mg", "Ca", "Sr", "Ba", "Ti", "Zr", "V", "Cr", "Mn",
+    "Fe", "Co", "Ni", "Cu", "Zn", "Al", "Ag", "Au", "Pt", "Pd", "Nb", "Mo", "W",
+}
+@mcp.tool()
+def generate_vasp_inputs(
+    poscar_text: str,
+    calc_type: str = "relax",
+    encut: Optional[int] = None,
+    kpoint_density: Optional[float] = None,
+    ismear: Optional[int] = None,
+    save: bool = True,
+) -> str:
+    """生成 VASP 输入文件（INCAR + KPOINTS + POTCAR 拼接脚本）。
+
+    Args:
+        poscar_text: POSCAR 文件内容（多行文本，作为结构输入）。
+        calc_type: 计算类型: relax / static / bands / dos / elastic。
+        encut: 平面波截断能 (eV)；缺省按体系给建议值。
+        kpoint_density: 倒空间 k 点密度 (1/Å)；缺省 0.04。
+        ismear: ISMEAR 覆盖值（-5 绝缘体/半导体, 0 需 SIGMA, 1 金属）。
+        save: 是否将输入文件写入 outputs 目录（默认 True）。
+
+    Returns:
+        INCAR / KPOINTS / POTCAR 脚本文本 + 参数校验报告。
+    """
+    # 1. 解析结构
+    try:
+        structure = Poscar.from_str(poscar_text).structure
+    except Exception as e:  # noqa: BLE001
+        return f"错误：POSCAR 解析失败（{e}）"
+    comp = structure.composition
+    els = [el.symbol for el in comp.elements]
+
+    # 2. 计算类型校验
+    if calc_type not in _INCAR_TEMPLATES:
+        return f"错误：不支持的 calc_type '{calc_type}'，可选: {', '.join(_INCAR_TEMPLATES)}"
+
+    # 3. 参数与校验
+    warnings: list[str] = []
+
+    has_metal = any(el in _METALS for el in els)
+    if ismear is None:
+        if has_metal:
+            ismear = 1
+        else:
+            ismear = -5
+    if has_metal and ismear == -5:
+        warnings.append("体系含金属元素，ISMEAR=-5（tetrahedron）不建议用于金属；建议 ISMEAR=1 + SIGMA=0.1")
+    if not has_metal and ismear == 1:
+        warnings.append("体系为绝缘体/半导体，ISMEAR=1 可接受但 ISMEAR=-5 更精确（需致密 k 点）")
+
+    encut = encut or 500
+    if not 200 <= encut <= 1000:
+        warnings.append(f"ENCUT={encut} eV 超出常见范围（200-1000），请核对 POTCAR 的 ENMAX")
+
+    density = kpoint_density or 0.04
+    if not 0.01 <= density <= 0.2:
+        warnings.append(f"k 点密度 {density} 1/Å 超出常见范围（0.02-0.1），请核对")
+
+    # 4. KPOINTS 网格（Monkhorst-Pack 自动网格，按倒空间密度）
+    grid = []
+    for i in range(3):
+        n = max(1, int(math.ceil(2.0 * math.pi / (density * structure.lattice.abc[i]))))
+        grid.append(n)
+    kpoints_text = (
+        "Automatic k-mesh\n"
+        "0\n"
+        "Monkhorst-Pack\n"
+        f"{grid[0]} {grid[1]} {grid[2]}\n"
+        "0 0 0\n"
+    )
+
+    # 5. INCAR
+    tpl = _INCAR_TEMPLATES[calc_type]
+    lines = [
+        "### MatCalcAgent 生成的 INCAR（请按体系核对后使用） ###",
+        f"SYSTEM = {comp.reduced_formula} ({calc_type})",
+        f"ENCUT = {encut}",
+        "PREC = Accurate",
+        f"EDIFF = 1E-5",
+        "LREAL = Auto",
+    ]
+    for key, val in tpl.items():
+        if key == "ISMEAR":
+            continue  # ISMEAR 在循环后统一写入（含用户覆盖值）
+        if val is None:
+            continue
+        if key == "SIGMA":
+            lines.append(f"SIGMA = {val}")
+        elif key == "EDIFFG":
+            lines.append(f"EDIFFG = {val}")
+        else:
+            lines.append(f"{key} = {val}")
+    lines.append(f"ISMEAR = {ismear}")
+    if calc_type in ("relax", "static", "dos", "elastic"):
+        lines.append("LCHARG = .TRUE.")
+    elif calc_type == "bands":
+        lines.append("ICHARG = 11")
+    if calc_type == "bands":
+        lines.append("# 能带计算需两段：先用 static 生成 CHGCAR，再设 ICHARG=11 + 高对称路径 KPOINTS")
+    if calc_type == "elastic":
+        lines.append("# 弹性常数建议使用独立脚本对 6 个应变方向分别计算，或采用 IBRION=6 一次性方案")
+    incar_text = "\n".join(lines) + "\n"
+
+    # 6. POTCAR 拼接脚本（不捆绑版权数据）
+    script_lines = [
+        "#!/bin/bash",
+        "# MatCalcAgent 生成的 POTCAR 拼接脚本（不包含 POTCAR 数据本身，请自行获取）",
+        "# 用法: 设置 VASP_POTCAR_DIR 指向你的 VASP 赝势目录（如 ~/potpaw_PBE），然后运行本脚本",
+        f"# 所需元素: {' '.join(els)}",
+        "",
+        'VASP_POTCAR_DIR="${VASP_POTCAR_DIR:-/path/to/potpaw_PBE}"',
+        "OUT=POTCAR",
+        "rm -f $OUT",
+        *[f'cat "${{VASP_POTCAR_DIR}}/POTCAR.{el}" >> $OUT' for el in els],
+        "echo 'POTCAR 拼接完成，检查 ENMAX 并与 INCAR 的 ENCUT 匹配（建议 ENCUT >= 1.3 * max(ENMAX)）'",
+    ]
+    potcar_script = "\n".join(script_lines) + "\n"
+
+    # 7. 校验报告
+    report = [
+        f"计算类型: {calc_type}",
+        f"元素: {', '.join(els)}",
+        f"ENCUT: {encut} eV（建议 >= 1.3 × POTCAR 最大 ENMAX）",
+        f"ISMEAR: {ismear}（{'金属建议 1' if has_metal else '绝缘体/半导体建议 -5'}）",
+        f"k 点网格: {grid[0]}×{grid[1]}×{grid[2]}（密度 {density} 1/Å）",
+    ]
+    report.extend(f"- 警告: {w}" for w in warnings)
+    if not warnings:
+        report.append("- 参数校验通过，无警告")
+
+    # 8. 保存
+    save_note = ""
+    if save:
+        os.makedirs(_OUTPUTS_DIR, exist_ok=True)
+        tag = f"{comp.reduced_formula}_{calc_type}_{int(time.time())}"
+        d = os.path.join(_OUTPUTS_DIR, tag)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "INCAR"), "w", encoding="utf-8") as f:
+            f.write(incar_text)
+        with open(os.path.join(d, "KPOINTS"), "w", encoding="utf-8") as f:
+            f.write(kpoints_text)
+        with open(os.path.join(d, "POSCAR"), "w", encoding="utf-8") as f:
+            f.write(poscar_text)
+        with open(os.path.join(d, "make_potcar.sh"), "w", encoding="utf-8") as f:
+            f.write(potcar_script)
+        save_note = f"\n输入文件已保存到目录: {d}（INCAR / KPOINTS / POSCAR / make_potcar.sh）"
+
+    return (
+        f"## 参数校验报告\n" + "\n".join(report) + "\n\n"
+        f"## INCAR\n```\n{incar_text}```\n"
+        f"## KPOINTS\n```\n{kpoints_text}```\n"
+        f"## POTCAR 拼接脚本（bash）\n```bash\n{potcar_script}```{save_note}"
+    )
+
+@mcp.tool()
+def generate_sbatch(
+    job_name: str = "matcalc",
+    command: Optional[str] = None,
+    partition: Optional[str] = None,
+    ntasks: int = 1,
+    cpus_per_task: Optional[int] = None,
+    walltime: str = "01:00:00",
+    modules: Optional[str] = None,
+    extra_sbatch: Optional[str] = None,
+    scheduler: str = "slurm",
+) -> str:
+    """生成 HPC 提交脚本（支持 Slurm sbatch 与 Torque/PBS qsub 两种调度后端）。
+
+    Args:
+        job_name: 作业名。
+        command: 实际执行命令；缺省用配置的 vasp_cmd（如 vasp_std），
+            自动加 mpirun 前缀（若含 vasp）。
+        partition: 队列/分区名（Slurm --partition / Torque -q）；缺省取配置。
+        ntasks: 总核数（Slurm --ntasks / Torque ppn）。
+        cpus_per_task: 每任务核数（仅 Slurm 有效，可选）。
+        walltime: 时限，如 "01:00:00"。
+        modules: 模块加载命令（如 "module load apps/vasp/5.4.4"）；缺省取配置。
+        extra_sbatch: 附加 #SBATCH 行（仅 Slurm）。
+        scheduler: 调度后端 "slurm"（默认）或 "torque"。
+
+    Returns:
+        提交脚本文本（Slurm: run.sbatch / Torque: run.pbs）。
+    """
+    cfg = remote.load_config()
+    partition = partition or cfg["partition"] or ""
+    modules = modules or cfg["modules"] or ""
+
+    if command is None:
+        vasp_cmd = cfg["vasp_cmd"] or "vasp_std"
+        if scheduler.lower() == "torque":
+            command = (
+                'NP=$(cat $PBS_NODEFILE | wc -l)\n'
+                f"mpirun -np $NP -machinefile $PBS_NODEFILE {vasp_cmd}"
+            )
+        else:
+            command = f"mpirun -np $SLURM_NTASKS {vasp_cmd}"
+
+    if scheduler.lower() == "torque":
+        lines = [
+            "#!/bin/bash",
+            f"#PBS -N {job_name}",
+            f"#PBS -l nodes=1:ppn={ntasks}",
+            "#PBS -e ./job.stderr",
+            "#PBS -o ./job.stdout",
+        ]
+        if partition:
+            lines.append(f"#PBS -q {partition}")
+        lines += ["#PBS -V", "#PBS -S /bin/bash"]
+        if modules:
+            lines.append(modules)
+        lines += [
+            "",
+            "cd $PBS_O_WORKDIR",
+            'echo "Job started: $(date)"',
+            command,
+            'echo "Job finished: $(date)"',
+        ]
+        return "\n".join(lines) + "\n"
+
+    # ---- Slurm 后端（默认） ----
+    if command is None:
+        pass  # 已在上面构造
+    lines = [
+        "#!/bin/bash",
+        "#SBATCH --job-name=" + job_name,
+        f"#SBATCH --ntasks={ntasks}",
+    ]
+    if cpus_per_task:
+        lines.append(f"#SBATCH --cpus-per-task={cpus_per_task}")
+    if partition:
+        lines.append(f"#SBATCH --partition={partition}")
+    lines.append(f"#SBATCH --time={walltime}")
+    if extra_sbatch:
+        lines.append(extra_sbatch)
+    lines += [
+        "",
+        "# 环境",
+        "module purge 2>/dev/null || true",
+        modules or "# (未配置模块加载，请按集群环境补充 module load)",
+        "",
+        "cd $SLURM_SUBMIT_DIR",
+        "echo \"Job started: $(date)\"",
+        command,
+        "echo \"Job finished: $(date)\"",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def configure_remote(
+    host: str,
+    user: str,
+    port: int = 22,
+    ssh_key: Optional[str] = None,
+    partition: Optional[str] = None,
+    modules: Optional[str] = None,
+    vasp_cmd: Optional[str] = None,
+    remote_workdir: Optional[str] = None,
+) -> str:
+    """配置远程 HPC 连接信息（SSH key 认证，不保存任何密码/私钥内容）。
+
+    Args:
+        host: 远程主机（域名或 IP）。
+        user: SSH 用户名。
+        port: SSH 端口（默认 22）。
+        ssh_key: 私钥路径（如 ~/.ssh/id_ed25519_xxx）；留空用 ssh 默认 key。
+        partition: Slurm 分区/队列名。
+        modules: 模块加载命令，如 "module load vasp/6.4.3"。
+        vasp_cmd: VASP 命令，如 "vasp_std" 或完整路径。
+        remote_workdir: 远程工作根目录，如 "~/matcalc"。
+
+    Returns:
+        保存后的配置摘要（不含敏感信息）。
+    """
+    cfg = remote.save_config(
+        host=host, user=user, port=port, ssh_key=ssh_key, partition=partition,
+        modules=modules, vasp_cmd=vasp_cmd, remote_workdir=remote_workdir,
+    )
+    masked = {k: ("***" if k in ("password", "key") else v) for k, v in cfg.items()}
+    return (
+        "远程配置已保存到 remote_config.json（仅连接信息，无凭据）。\n"
+        f"当前配置: {masked}\n"
+        "下一步建议调用 check_connection 验证 SSH key 连通性。"
+    )
+
+
+@mcp.tool()
+def check_connection() -> str:
+    """测试远程 SSH 连接（key 认证）并探测 squeue / vasp_std 可用性。"""
+    r = remote.check_connection()
+    parts = [
+        f"退出码: {r.get('exit')}",
+        f"stdout: {r.get('stdout', '').strip() or '(空)'}",
+        f"stderr: {r.get('stderr', '').strip() or '(空)'}",
+        r.get("note", ""),
+    ]
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def ssh_run(command: str, remote_dir: Optional[str] = None) -> str:
+    """在远程执行白名单命令（安全限制：sbatch/squeue/tail/cat 等）。
+
+    Args:
+        command: 远程命令（如 "sbatch run.sh"、"tail -30 OUTCAR"）。
+        remote_dir: 可选，远程工作目录（缺省用配置的 remote_workdir）。
+
+    Returns:
+        远程执行结果（退出码 / stdout / stderr）。
+    """
+    r = remote.ssh_run(command, remote_dir)
+    return (
+        f"远程命令: {command}\n退出码: {r.get('exit')}\n"
+        f"stdout:\n{r.get('stdout', '').strip() or '(空)'}\n"
+        f"stderr:\n{r.get('stderr', '').strip() or '(空)'}"
+    )
+
+
+@mcp.tool()
+def upload(local_path: str, remote_path: Optional[str] = None) -> str:
+    """上传本地文件到远程（scp）。
+
+    Args:
+        local_path: 本地文件路径（如 server/outputs/NaCl_xxx.vasp）。
+        remote_path: 远程目标路径；缺省为 remote_workdir 下同名。
+
+    Returns:
+        上传结果。
+    """
+    r = remote.upload(local_path, remote_path)
+    return (
+        f"上传 {local_path} → 远程\n退出码: {r.get('exit')}\n"
+        f"stdout: {r.get('stdout', '').strip() or '(空)'}\n"
+        f"stderr: {r.get('stderr', '').strip() or '(空)'}"
+    )
+
+
+@mcp.tool()
+def download(remote_path: str, local_path: Optional[str] = None) -> str:
+    """从远程下载文件到本地（scp）。
+
+    Args:
+        remote_path: 远程文件路径。
+        local_path: 本地保存路径；缺省保存到 outputs 目录。
+
+    Returns:
+        下载结果。
+    """
+    r = remote.download(remote_path, local_path)
+    return (
+        f"下载 {remote_path} → 本地\n退出码: {r.get('exit')}\n"
+        f"stdout: {r.get('stdout', '').strip() or '(空)'}\n"
+        f"stderr: {r.get('stderr', '').strip() or '(空)'}"
+    )
+
+
+# ==================== M3：常用性质工作流工具（借鉴 VASPKIT / atomate 功能集） ====================
+
+
+def _save_input_set(tag: str, files: dict, project: Optional[str] = None) -> str:
+    """把一组输入文件保存到 outputs/[<project>/inputs/]<tag>_<时间戳>/ 目录。"""
+    d = os.path.join(_out_dir(project, "input"), f"{tag}_{int(time.time())}")
+    os.makedirs(d, exist_ok=True)
+    rows = [f"输入文件已保存到目录: {d}"]
+    for name, text in files.items():
+        p = os.path.join(d, name)
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        rows.append(f"- {name} ({len(text.splitlines())} 行)")
+    return "\n".join(rows)
+
+
+def _primitive_and_kpath(structure: Structure):
+    """取标准原胞与其高对称路径（能带/DOA 计算必须用原胞保证 k 坐标一致）。"""
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+    from pymatgen.symmetry.bandstructure import HighSymmKpath
+
+    sga = SpacegroupAnalyzer(structure, symprec=0.01)
+    prim = sga.get_primitive_standard_structure()
+    hskp = HighSymmKpath(prim)
+    kp = hskp.kpath
+    return prim, kp["path"], kp["kpoints"]
+
+
+def _line_mode_kpoints_text(path_segments, kpoint_dict, npts: int) -> str:
+    """由路径段生成 VASP line-mode KPOINTS 文本。"""
+    lines = [
+        "Line-mode K-Path (MatCalcAgent auto-generated)",
+        str(npts),
+        "Line-mode",
+        "rec",
+    ]
+    for seg in path_segments:
+        for a, b in zip(seg[:-1], seg[1:]):
+            ka = kpoint_dict[a]
+            kb = kpoint_dict[b]
+            fmt = lambda lbl, c: "{} {:.6f} {:.6f} {:.6f}".format(lbl, *c)  # noqa: E731
+            lines.append("{} {}".format(a.replace("\\Gamma", "GAMMA"), b.replace("\\Gamma", "GAMMA")))
+            lines.append(fmt("", ka).strip() + "   " + fmt("", kb).strip())
+    return "\n".join(lines) + "\n"
+
+
+@mcp.tool()
+def generate_band_inputs(poscar_text: str, line_density: int = 20, encut: Optional[int] = None, project: Optional[str] = None) -> str:
+    """生成两段式能带计算输入（借鉴 VASPKIT 303）：SCF 电荷步 + 非自洽能带步。
+
+    自动生成标准原胞与高对称路径 KPOINTS（line-mode）。
+
+    Args:
+        poscar_text: POSCAR 文本（任意惯用胞，将自动转为标准原胞）。
+        line_density: 每段高对称路径的插值点数（默认 20）。
+        encut: 平面波截断能 (eV)；缺省按体系估算。
+
+    Returns:
+        输入文件清单与使用说明（SCF → NSCF 两步流程）。
+    """
+    struct = Poscar.from_str(poscar_text).structure
+    prim, segments, kdict = _primitive_and_kpath(struct)
+    comp = prim.composition
+    encut_v = encut if encut else max(400, int(max(float(Element(el.symbol).Z) for el in comp.elements) * 50))
+    prim_poscar = _to_vasp5_poscar(prim)
+
+    incar_scf = "\n".join(
+        [
+            "### Step1 SCF：收敛电荷密度（生成 CHGCAR）###",
+            f"SYSTEM = {comp.reduced_formula} band-scf",
+            f"ENCUT = {encut_v}",
+            "PREC = Accurate",
+            "EDIFF = 1E-6",
+            f"ISMEAR = 0",
+            "SIGMA = 0.05",
+            "LCHARG = .TRUE.",
+            "LWAVE = .FALSE.",
+            "NCORE = 4",
+            "",
+        ]
+    )
+    incar_band = "\n".join(
+        [
+            "### Step2 NSCF：沿高对称路径算本征值（读 Step1 的 CHGCAR）###",
+            f"SYSTEM = {comp.reduced_formula} band-nscf",
+            f"ENCUT = {encut_v}",
+            "PREC = Accurate",
+            "EDIFF = 1E-6",
+            "ICHARG = 11          ! 非自洽：固定电荷",
+            "LCHARG = .FALSE.",
+            "LWAVE = .FALSE.",
+            "NCORE = 4",
+            "",
+        ]
+    )
+    kpoints_band = _line_mode_kpoints_text(segments, kdict, line_density)
+    potcar_sh = (
+        "#!/bin/bash\n# POTCAR 拼接脚本（设置 VASP_POTCAR_DIR 后运行）\n"
+        'VASP_POTCAR_DIR="${VASP_POTCAR_DIR:?请设置赝势目录}"\n'
+        "rm -f POTCAR\nfor el in @ELS@ ; do\n"
+        '  cat "$VASP_POTCAR_DIR/$el/POTCAR" >> POTCAR || exit 1\ndone\necho done\n'
+    ).replace("@ELS@", " ".join(el.symbol for el in comp.elements))
+    saved = _save_input_set(
+        "band_inputs",
+        {
+            "POSCAR": prim_poscar,
+            "INCAR_step1_SCF": incar_scf,
+            "INCAR_step2_NSCF": incar_band,
+            "KPOINTS_band": kpoints_band,
+            "make_potcar.sh": potcar_sh,
+        },
+        project=project,
+    )
+    labels = "-".join(seg[0] + ".." + seg[-1] for seg in segments)
+    return (
+        saved
+        + "\n\n使用流程:\n"
+        + "1. make_potcar.sh 生成 POTCAR\n"
+        + "2. 用目录内 POSCAR + INCAR_step1_SCF + 普通 Gamma 网格 KPOINTS 做 SCF（得到 CHGCAR）\n"
+        + "3. 复制 CHGCAR，换 INCAR_step2_NSCF + KPOINTS_band 做非自洽能带\n"
+        + f"4. 高对称路径段: {labels}\n"
+        + "5. 完成后下载 vasprun.xml，用 plot_band 工具绘图"
+    )
+
+
+@mcp.tool()
+def generate_dos_inputs(poscar_text: str, nedos: int = 2001, encut: Optional[int] = None, include_pdos: bool = True, project: Optional[str] = None) -> str:
+    """生成态密度（DOS/PDOS）计算输入（借鉴 VASPKIT 111/112）。
+
+    Args:
+        poscar_text: POSCAR 文本。
+        nedos: 态密度采样点数（默认 2001，VASPKIT 推荐 ≥2000）。
+        encut: 平面波截断能 (eV)；缺省按体系估算。
+        include_pdos: 是否开启投影态密度（LORBIT=11）。
+
+    Returns:
+        输入文件清单与说明。
+    """
+    struct = Poscar.from_str(poscar_text).structure
+    prim, _, _ = _primitive_and_kpath(struct)
+    comp = prim.composition
+    encut_v = encut if encut else max(400, int(max(float(Element(el.symbol).Z) for el in comp.elements) * 50))
+    # DOS 需要精细 k 网格：在自动网格基础上加密一倍
+    kden = 0.05  # 更密的密度（M1 默认 0.04 → 这里更细）
+    a_len = max(prim.lattice.abc)
+    n_k = max(4, min(40, math.ceil(2 * math.pi / (kden * a_len))))
+    kpoints_txt = (
+        "Automatic dense mesh for DOS (MatCalcAgent)\n0\nGamma\n"
+        f"{n_k} {n_k} {n_k}\n0 0 0\n"
+    )
+    incar = ["### DOS 计算 INCAAR（MatCalcAgent 生成，请核对体系后使用） ###",
+             f"SYSTEM = {comp.reduced_formula} dos",
+             f"ENCUT = {encut_v}",
+             "PREC = Accurate",
+             "EDIFF = 1E-6",
+             "ISMEAR = -5          # 四面体方法（绝缘体/半导体最佳；金属请改 ISMEAR=1 且减小 SIGMA）",
+             f"NEDOS = {nedos}",
+             "LORBIT = 11          # 输出 PDOS（分波态密度）" if include_pdos else "# 未开启 PDOS",
+             "LCHARG = .TRUE.",
+             "LWAVE = .FALSE.",
+             "NCORE = 4", ""]
+    potcar_sh = (
+        "#!/bin/bash\nVASP_POTCAR_DIR=\"${VASP_POTCAR_DIR:?请设置赝势目录}\"\n"
+        "rm -f POTCAR\nfor el in @ELS@ ; do\n"
+        '  cat "$VASP_POTCAR_DIR/$el/POTCAR" >> POTCAR || exit 1\ndone\necho done\n'
+    ).replace("@ELS@", " ".join(el.symbol for el in comp.elements))
+    saved = _save_input_set(
+        "dos_inputs",
+        {"POSCAR": _to_vasp5_poscar(prim), "INCAR": "\n".join(incar), "KPOINTS": kpoints_txt, "make_potcar.sh": potcar_sh},
+        project=project,
+    )
+    return saved + f"\n\n说明: k 网格 {n_k}x{n_k}x{n_k}；完成后下载 vasprun.xml 用 plot_dos 工具绘图"
+
+@mcp.tool()
+def generate_optical_inputs(poscar_text: str, encut: Optional[int] = None, nedos: int = 2000, cshift: float = 0.1, omegamax: float = 40.0, project: Optional[str] = None) -> str:
+    """生成光学性质（介电函数/吸收谱）两步计算输入（借鉴 VASPKIT 711-714）。
+
+    Step1 SCF 收敛电荷；Step2 LOPTICS=.TRUE. 非自洽计算虚部介电函数。
+
+    Args:
+        poscar_text: POSCAR 文本。
+        encut: 截断能 (eV)；缺省按体系估算。
+        nedos: 光谱采样点数。
+        cshift: 展宽参数 CSHIFT (eV)。
+        omegamax: 最大频率 OMEGAMAX (eV)。
+
+    Returns:
+        输入文件清单与流程说明。
+    """
+    struct = Poscar.from_str(poscar_text).structure
+    comp = struct.composition
+    encut_v = encut if encut else max(400, int(max(float(Element(el.symbol).Z) for el in comp.elements) * 50))
+    incar1 = "\n".join([
+        "### Step1 SCF（生成 CHGCAR）###", f"SYSTEM = {comp.reduced_formula} opt-scf",
+        f"ENCUT = {encut_v}", "EDIFF = 1E-6", "ISMEAR = 0", "SIGMA = 0.05",
+        "LCHARG = .TRUE.", "LWAVE = .FALSE.", "",
+    ])
+    incar2 = "\n".join([
+        "### Step2 光学：非自洽 + LOPTICS（读 CHGCAR，输出实/虚介电函数到 vasprun.xml）###",
+        f"SYSTEM = {comp.reduced_formula} optical",
+        f"ENCUT = {encut_v}", "ICHARG = 11", "LOPTICS = .TRUE.",
+        f"CSHIFT = {cshift}", f"OMEGAMAX = {omegamax}", f"NEDOS = {nedos}",
+        "ISMEAR = 0", "SIGMA = 0.05", "LWAVE = .FALSE.", "LCHARG = .FALSE.", "",
+    ])
+    saved = _save_input_set("optical_inputs", {"POSCAR": _to_vasp5_poscar(struct), "INCAR_step1_SCF": incar1, "INCAR_step2_optics": incar2}, project=project)
+    return saved + "\n\n说明: 完成后 vasprun.xml 含 dielectric function；吸收系数 α(ω)、折射率等可由实虚部 ε1/ε2 后处理得到"
+
+
+@mcp.tool()
+def generate_elastic_inputs(poscar_text: str, encut: Optional[int] = None, pstress: float = 0.0, project: Optional[str] = None) -> str:
+    """生成弹性常数计算输入（VASP 内置 IBRION=6 应力-应变法，借鉴 VASPKIT 20x）。
+
+    Args:
+        poscar_text: POSCAR 文本（建议先用充分弛豫的 CONTCAR）。
+        encut: 截断能 (eV)。
+        pstress: 扰动应力上限 (kBar)，默认 0（VASP 自动选步长）。
+
+    Returns:
+        输入文件清单与结果提取说明。
+    """
+    struct = Poscar.from_str(poscar_text).structure
+    comp = struct.composition
+    encut_v = encut if encut else max(500, int(max(float(Element(el.symbol).Z) for el in comp.elements) * 60))
+    incar = "\n".join([
+        "### 弹性常数（IBRION=6 应力-应变法；要求结构已充分弛豫）###",
+        f"SYSTEM = {comp.reduced_formula} elastic",
+        f"ENCUT = {encut_v}",
+        "EDIFF = 1E-6          # 必须比常规更紧",
+        "IBRION = 6            # 计算弹性常数",
+        "ISIF = 3              # 计算刚性离子弹性常数 + 内应变张量",
+        "NFREE = 4             # 每个形变用 4 个位移",
+        f"PSTRESS = {pstress}",
+        "NSW = 1",
+        "PREC = High",
+        "ISMEAR = 0",
+        "SIGMA = 0.05",
+        "NCORE = 4", "",
+    ])
+    saved = _save_input_set(
+        "elastic_inputs",
+        {"POSCAR": _to_vasp5_poscar(struct), "INCAR": incar},
+        project=project,
+    )
+    return saved + "\n\n说明: OUTCAR 末尾 'ELASTIC MODULI' 表给出对称化弹性常数矩阵（GPa）；立方体系看 C11/C12/C44，可算体模量 B=(C11+2C12)/3。注意 k 网格需收敛良好"
+
+
+@mcp.tool()
+def generate_eos_inputs(poscar_text: str, scale_min: float = 0.96, scale_max: float = 1.04, n_points: int = 7, project: Optional[str] = None) -> str:
+    """生成状态方程（EOS）体积扫描输入集：按晶格缩放生成 n 个结构目录。
+
+    Args:
+        poscar_text: 已弛豫的 POSCAR 文本。
+        scale_min/scale_max: 晶格缩放因子范围（如 0.96~1.04 即 ±4% 体积扫描）。
+        n_points: 采样点数（默认 7）。
+
+    Returns:
+        各缩放点目录清单；跑完后收集 E-V 数据调用 fit_eos 拟合。
+    """
+    from pymatgen.core.lattice import Lattice
+
+    struct = Poscar.from_str(poscar_text).structure
+    v0 = struct.volume
+    scales = [scale_min + i * (scale_max - scale_min) / (n_points - 1) for i in range(n_points)]
+    rows = [f"EOS 扫描集（{n_points} 点，缩放 {scale_min}~{scale_max}）已保存:"]
+    for i, s in enumerate(scales, 1):
+        st = struct.copy()
+        st.scale_lattice(v0 * s**3)
+        d = os.path.join(_out_dir(project, "input"), f"eos_scan_{int(time.time())}_{i:02d}")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "POSCAR"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(_to_vasp5_poscar(st))
+        rows.append(f"- {d}  缩放 {s:.4f}, V={st.volume:.3f} Å³")
+    rows.append("\n流程: 对每个目录做同参数 static 计算 → 收集 (V, E) → 调用 fit_eos 得到平衡体积/体模量")
+    return "\n".join(rows)
+
+
+@mcp.tool()
+def generate_bader_inputs(poscar_text: str, encut: Optional[int] = None, project: Optional[str] = None) -> str:
+    """生成 Bader 电荷分析计算输入（LAECHG=.TRUE. 输出 AECCAR0/AECCAR2）。
+
+    Args:
+        poscar_text: POSCAR 文本。
+        encut: 截断能 (eV)；缺省按体系估算。
+        project: 可选项目名——产物保存到 outputs/<project>/inputs/。
+
+    Returns:
+        输入文件清单与后处理流程说明（需自备 Henkelman bader 程序）。
+    """
+    struct = Poscar.from_str(poscar_text).structure
+    comp = struct.composition
+    encut_v = encut if encut else max(500, int(max(float(Element(el.symbol).Z) for el in comp.elements) * 50))
+    incar = "\n".join([
+        "### Bader 电荷分析 static（MatCalcAgent 生成）###",
+        f"SYSTEM = {comp.reduced_formula} bader",
+        f"ENCUT = {encut_v}",
+        "PREC = Accurate",
+        "EDIFF = 1E-6",
+        "ISMEAR = 0",
+        "SIGMA = 0.05",
+        "NSW = 0",
+        "IBRION = -1",
+        "LAECHG = .TRUE.       ! 输出 AECCAR0 / AECCAR2（Bader 必需）",
+        "LCHARG = .TRUE.",
+        "LWAVE = .FALSE.",
+        "NGXF = 96             # 可选：加密 FFT 网格提升 Bader 精度（按体系调整）",
+        "NGYF = 96",
+        "NGZF = 96",
+        "",
+    ])
+    saved = _save_input_set("bader_inputs", {"POSCAR": _to_vasp5_poscar(struct), "INCAR": incar}, project=project)
+    flow = (
+        "\n\n后处理流程（远程机器需安装 Henkelman group bader 程序）:\n"
+        "1. VASP 跑完得到 AECCAR0 AECCAR2 CHGCAR\n"
+        "2. chgsum.pl AECCAR0 AECCAR2        # 生成 CHGCAR_sum\n"
+        "3. bader CHGCAR -ref CHGCAR_sum     # 生成 ACF.dat AVF.dat BvAt.dat\n"
+        "4. 下载 ACF.dat 后调用 parse_bader_acf 解析各原子电荷"
+    )
+    return saved + flow
+# ==================== M4: 作业守护 (submit_and_watch / check_job) ====================
+
+# 节点配置（详见项目根 CLUSTERS.md；此处不含任何密码，全部 key 免密）
+NODES: dict[str, dict] = {
+    "master": {
+        "host": "ls@10.20.119.71",
+        "key": os.path.expanduser("~/.ssh/id_rsa_192_168_10_152"),
+        "queue": "amd256c",
+        "max_ppn": 128,
+        "vasp_setup": "module load apps/vasp/5.4.4",
+        "vasp_exe": "vasp_std",
+        "workroot": "~/matcalc",
+    },
+    "hzw": {
+        "host": "hzw@10.20.112.88",
+        "key": None,
+        "queue": "hzw",
+        "max_ppn": 96,
+        "vasp_setup": "source /data/intel/oneapi/setvars.sh > /dev/null 2>&1",
+        "vasp_exe": "/home/hzw/software/vasp6.6/vasp.6.6.0/bin/vasp_std",
+        "workroot": "~/matcalc",
+    },
+}
+
+LOCAL_POTCAR_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "potcars", "potpaw_PBE")
+
+
+def _ssh_base(node: str) -> list:
+    """构造 ssh/scp 共用的认证参数列表。"""
+    cfg = NODES[node]
+    args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20"]
+    if cfg["key"]:
+        args += ["-i", cfg["key"]]
+    return args
+
+
+def _run_local(cmd: list, timeout: int = 120) -> tuple[int, str]:
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+
+def _make_run_pbs(node: str, job_name: str, ppn: int) -> str:
+    cfg = NODES[node]
+    return "\n".join([
+        "#!/bin/bash",
+        f"#PBS -q {cfg['queue']}",
+        f"#PBS -N {job_name}",
+        f"#PBS -l nodes=1:ppn={ppn}",
+        "#PBS -l walltime=99:00:00",
+        "#PBS -j oe",
+        "",
+        "cd $PBS_O_WORKDIR",
+        cfg["vasp_setup"],
+        f"NP=$(cat $PBS_NODEFILE | wc -l)",
+        'echo "started $(date) NP=$NP"',
+        f"mpirun -np $NP -machinefile $PBS_NODEFILE {cfg['vasp_exe']} > vasp.out 2>&1",
+        'echo "finished $(date)"',
+        "",
+    ])
+
+
+def _normalize_lf(path: str) -> None:
+    with open(path, "rb") as f:
+        data = f.read()
+    data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+@mcp.tool()
+def submit_and_watch(
+    project: str,
+    local_dir: str,
+    node: str = "master",
+    ppn: int = 48,
+    job_name: Optional[str] = None,
+    potcar_elements: Optional[str] = None,
+    poll_seconds: int = 120,
+    max_polls: int = 3,
+) -> str:
+    """一键提交 VASP 作业到集群并开始守护：输入校验→POTCAR本地拼接→LF规范→上传→qsub→轮询。
+
+    Args:
+        project: 项目名（决定远端与本地归档路径）。
+        local_dir: 本地输入目录，需含 INCAR/KPOINTS/POSCAR（POTCAR 可由 potcar_elements 自动拼接）。
+        node: 目标节点 "master" 或 "hzw"。
+        ppn: 核数（不超过节点上限）。
+        job_name: 作业名（缺省用目录名）。
+        potcar_elements: 如 "Na_pv,Mn_pv,Ni_pv,O" —— 从本地 potpaw_PBE 库按 POSCAR 元素序拼接。
+        poll_seconds: 守护轮询间隔秒。
+        max_polls: 本次调用内轮询次数（超时后可稍后再用 check_job 查询）。
+
+    Returns:
+        提交结果与作业状态摘要。
+    """
+    import subprocess as sp
+    import time as _time
+
+    if node not in NODES:
+        return f"错误: 未知节点 '{node}'，可选 {list(NODES)}"
+    cfg = NODES[node]
+    ppn = min(ppn, cfg["max_ppn"])
+    local_dir = os.path.abspath(local_dir)
+    if not os.path.isdir(local_dir):
+        return f"错误: 目录不存在 {local_dir}"
+    job_name = job_name or os.path.basename(local_dir.rstrip("/\\"))
+
+    # 1) 输入校验 + LF 规范化
+    need = ["INCAR", "KPOINTS", "POSCAR"]
+    missing = [f for f in need if not os.path.isfile(os.path.join(local_dir, f))]
+    if missing:
+        return f"错误: 缺少输入文件 {missing}"
+    for f in need:
+        _normalize_lf(os.path.join(local_dir, f))
+
+    # 2) POTCAR 本地拼接
+    potcar_path = os.path.join(local_dir, "POTCAR")
+    if potcar_elements and not os.path.isfile(potcar_path):
+        els = [e.strip() for e in potcar_elements.split(",") if e.strip()]
+        poscar_head = open(os.path.join(local_dir, "POSCAR")).read().splitlines()[5].split()
+        if els != poscar_head:
+            return f"错误: potcar_elements ({els}) 与 POSCAR 元素行 ({poscar_head}) 不一致"
+        with open(potcar_path, "wb") as out:
+            for el in els:
+                seg = os.path.join(LOCAL_POTCAR_LIB, el, "POTCAR")
+                if not os.path.isfile(seg):
+                    os.remove(potcar_path)
+                    return f"错误: 本地赝势库缺少 {el} ({seg})"
+                with open(seg, "rb") as fh:
+                    out.write(fh.read())
+    if not os.path.isfile(potcar_path):
+        return "错误: 缺少 POTCAR 且未提供 potcar_elements"
+
+    # 3) run.pbs 生成
+    pbs_path = os.path.join(local_dir, "run.pbs")
+    with open(pbs_path, "w", newline="\n") as f:
+        f.write(_make_run_pbs(node, job_name.replace("_", "-"), ppn))
+
+    # 4) 上传
+    remote_dir = f"{cfg['workroot']}/{project}/{job_name}"
+    base_args = ["scp"] + _ssh_base(node)
+    rc, out = _run_local(["ssh"] + _ssh_base(node) + [cfg["host"], f"mkdir -p {remote_dir}"])
+    if rc != 0:
+        return f"错误: 远端建目录失败 {out[:200]}"
+    for f in need + ["POTCAR", "run.pbs"]:
+        rc, out = _run_local(base_args + [os.path.join(local_dir, f), f"{cfg['host']}:{remote_dir}/{f}"])
+        if rc != 0:
+            return f"错误: 上传 {f} 失败 {out[:200]}"
+
+    # 5) 提交
+    rc, out = _run_local(["ssh"] + _ssh_base(node) + [cfg["host"],
+                          f"cd {remote_dir} && dos2unix -q INCAR KPOINTS POSCAR run.pbs 2>/dev/null; qsub run.pbs"])
+    if rc != 0 or not out.strip():
+        return f"错误: qsub 失败 {out[:300]}"
+    job_id = out.strip().splitlines()[-1].strip()
+
+    # 6) 守护轮询
+    status_lines = [f"已提交: {job_id} @ {node} ({project}/{job_name}, ppn={ppn})"]
+    for k in range(max_polls):
+        _time.sleep(poll_seconds)
+        rc, out = _run_local(["ssh"] + _ssh_base(node) + [cfg["host"],
+                              f"qstat -a 2>/dev/null | grep -c '{job_id.split('.')[0]}' ; tail -1 {remote_dir}/OSZICAR 2>/dev/null"])
+        tail = out.strip().splitlines()
+        running = tail[0].strip() if tail else "0"
+        osz = tail[1].strip() if len(tail) > 1 else "(无OSZICAR)"
+        done = running == "0"
+        status_lines.append(f"[{(k + 1) * poll_seconds}s] {'结束' if done else '运行中'} | {osz}")
+        if done:
+            break
+    status_lines.append(f"远端目录: {remote_dir}")
+    status_lines.append("后续查询: check_job(job_id=..., node=...)")
+    return "\n".join(status_lines)
+
+
+@mcp.tool()
+def check_job(job_id: str, node: str = "master", remote_dir: Optional[str] = None) -> str:
+    """查询已提交 VASP 作业的状态、最新能量与收敛情况。
+
+    Args:
+        job_id: 作业 ID（如 "3687.master"，匹配按数字部分）。
+        node: 节点名 master|hzw。
+        remote_dir: 远端工作目录（缺省尝试 ~/matcalc 下自动定位失败时必须提供）。
+
+    Returns:
+        队列状态 + OSZICAR 尾行 + 收敛标记计数。
+    """
+    if node not in NODES:
+        return f"错误: 未知节点 '{node}'"
+    cfg = NODES[node]
+    jnum = job_id.split(".")[0]
+    rd = remote_dir or "$(find ~/matcalc -maxdepth 2 -name OUTCAR -newer /etc/hostname 2>/dev/null | head -1 | xargs dirname 2>/dev/null)"
+    cmd = (f"qstat -a 2>/dev/null | grep -c '{jnum}\\.' ; "
+           f"D={rd}; echo DIR=$D; "
+           f"tail -1 $D/OSZICAR 2>/dev/null; "
+           f"grep -c 'reached required accuracy' $D/OUTCAR 2>/dev/null")
+    rc, out = _run_local(["ssh"] + _ssh_base(node) + [cfg["host"], cmd])
+    return out.strip() or "(无输出)"
+
+
+if __name__ == "__main__":
+    mcp.run()
