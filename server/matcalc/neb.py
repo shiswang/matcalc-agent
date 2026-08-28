@@ -24,7 +24,7 @@ import os
 import time
 from typing import Optional
 
-from pymatgen.core import Structure
+from pymatgen.core import Lattice, Structure
 from pymatgen.io.vasp import Poscar
 
 from .common import out_dir as _out_dir
@@ -182,14 +182,16 @@ def generate_neb_endpoints(poscar_init: str, poscar_final: str) -> str:
 
 
 def _load_idpp_class():
-    """延迟加载 pymatgen 扩展包中的 DiffusionAnalyzer（IDPP 插值引擎）。
+    """延迟加载 pymatgen 扩展包中的 IDPPSolver（IDPP 插值引擎）。
 
     单独抽成函数便于测试 monkeypatch：模拟"扩展包未安装"或
     "类构造抛异常"两种失败场景，验证回退 linear 的路径。
+    （2025.11.15 版扩展包 API：DiffusionAnalyzer 已更名/重构为 IDPPSolver，
+    契约 = 传入含端点的初猜结构列表，run() 返回松弛后的同长结构列表。）
     """
-    from pymatgen.analysis.diffusion.neb.pathfinder import DiffusionAnalyzer
+    from pymatgen.analysis.diffusion.neb.pathfinder import IDPPSolver
 
-    return DiffusionAnalyzer
+    return IDPPSolver
 
 
 def _idpp_intermediate_structures(
@@ -197,17 +199,33 @@ def _idpp_intermediate_structures(
 ) -> list[Structure]:
     """用 IDPP 方法生成中间 image 结构列表（不含两端点，长度恰为 images）。
 
-    语义备注（详见模块 docstring）：
-    - 扩展包 pymatgen-analysis-diffusion 中插值器的 nimages 语义是
-      【含首尾端点的总结构数】；故此处传 nimages=images+2，使中间恰好
-      images 个，并在剥离端点后二次校验数量，不符立即抛错回退。
-    - 任何一步失败（导入失败/API 变动/构造或收敛异常/数量不符）都向上抛
-      异常，由调用方捕获后回退 linear 并注明。
+    新版契约（pymatgen-analysis-diffusion 2025.11.15）：
+    - IDPPSolver(structures) 接收【含两端点的初猜链】，数量由调用方决定；
+      本模块以自实现 linear 插值构造初猜（最可靠的起点）；
+    - solver.run() 原位松弛整条链并返回同长结构列表；剥离端点后二次
+      校验中段数量，不符立即抛错回退。
+    - 任何一步失败（导入失败/构造或收敛异常/数量不符）都向上抛异常，
+      由调用方捕获后回退 linear 并注明。
     """
-    DA = _load_idpp_class()
-    da = DA(s_init, s_final, nimages=images + 2)  # 含两端点 → 中间恰为 images 个
-    paths = da.get_flattened_path()  # 预期含首尾端点共 images+2 个结构
-    mids = list(paths)[1:-1]  # 剥离首尾端点，只留中间段
+    IDPPSolver = _load_idpp_class()
+    guess = [s_init]
+    for i in range(1, images + 1):
+        t = i / (images + 1)
+        mat = (1 - t) * s_init.lattice.matrix + t * s_final.lattice.matrix
+        lat = Lattice(mat)
+        species = [site.specie for site in s_init]
+        frac = [
+            (1 - t) * p_init + t * p_fin
+            for p_init, p_fin in zip(
+                s_init.frac_coords, s_final.frac_coords, strict=True
+            )
+        ]
+        guess.append(Structure(lat, species, frac, coords_are_cartesian=False))
+    guess.append(s_final)
+
+    solver = IDPPSolver(guess)
+    relaxed = solver.run()  # 含首尾端点共 images+2 个结构
+    mids = list(relaxed)[1:-1]  # 剥离首尾端点，只留中间段
     if len(mids) != images:
         raise RuntimeError(
             f"IDPP 返回结构数不符: 期望中段 {images} 个，实得 {len(mids)} 个"
@@ -277,7 +295,7 @@ def generate_neb_images(
         try:
             mids = _idpp_intermediate_structures(s_init, s_final, images)
             mid_texts = [_to_vasp5_poscar(m) for m in mids]
-            method_note = "idpp（pymatgen DiffusionAnalyzer，IDPP 弹性插值）"
+            method_note = "idpp（pymatgen-analysis-diffusion IDPPSolver，弹性插值）"
         except Exception as e:  # noqa: BLE001 —— 包未安装/API 变动/收敛失败一律回退
             method_note = f"idpp → IDPP 失败已回退 linear（原因: {type(e).__name__}: {e}）"
             effective = "linear"

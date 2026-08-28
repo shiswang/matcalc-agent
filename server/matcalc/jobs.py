@@ -17,8 +17,8 @@ try:  # 兼容包导入与脚本直跑
     # 注意：remote 在 server/ 层（main 的兄弟模块），相对导入须上溯两级
     from .. import remote as _remote
     from .clusters import load_clusters as _load_clusters, local_potcar_lib as _potcar_lib
-except ImportError:  # pragma: no cover
-    from clusters import load_clusters as _load_clusters, local_potcar_lib as _potcar_lib
+except ImportError:  # pragma: no cover —— 脚本直跑（python server/main.py）：matcalc 为顶层包
+    from matcalc.clusters import load_clusters as _load_clusters, local_potcar_lib as _potcar_lib
     import remote as _remote
 
 NODES = _load_clusters()["nodes"]

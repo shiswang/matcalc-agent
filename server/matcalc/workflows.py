@@ -53,6 +53,15 @@ WF_TEMPLATES: Dict[str, List[dict]] = {
         {"name": "compare_report", "type": "report"},
         {"name": "result_note", "type": "note"},
     ],
+    # 通用标准链：弛豫 → 静态 DOS → 能量/DOS/带隙提取 → 报告 → 笔记
+    # （S5 用户确认：最普遍的计算模式，无 NMO 专属语义）
+    "relax_dos_standard": [
+        {"name": "relax", "type": "vasp_relax"},
+        {"name": "dos", "type": "vasp_static_dos"},
+        {"name": "extract", "type": "local_analysis"},
+        {"name": "summary_report", "type": "report"},
+        {"name": "final_note", "type": "note"},
+    ],
 }
 
 
@@ -406,11 +415,104 @@ def _step_note(state: dict, step: dict) -> str:
     return f"[{step['name']}] 笔记已保存（{where}）"
 
 
+def _estimate_gap_from_doscar(path: str) -> float:
+    """DOSCAR 简易带隙估计：在费米能两侧找 DOS 首超阈值的能量边界。
+
+    阈值取窗口内最大 DOS 的 0.1%（对态密度绝对量纲不敏感）。
+    金属（两侧无带隙区间）或解析失败返回 0.0，调用方标注为估计值。
+    """
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+        if len(lines) < 8:
+            return 0.0
+        ef = float(lines[5].split()[0])
+        n = int(lines[6].split()[0])
+        energies, dos = [], []
+        for ln in lines[7:7 + n]:
+            tok = ln.split()
+            if len(tok) >= 2:
+                energies.append(float(tok[0]))
+                dos.append(float(tok[1]))
+        if len(energies) < 2:
+            return 0.0
+        win = [(e, d) for e, d in zip(energies, dos) if -8 <= e - ef <= 8]
+        if not win:
+            return 0.0
+        thr = max(d for _, d in win) * 1e-3 or 1e-12
+        v_edges = [e for e, d in win if e <= ef and d >= thr]
+        c_edges = [e for e, d in win if e >= ef and d >= thr]
+        if not v_edges or not c_edges:
+            return 0.0  # 金属/半金属：费米能一侧恒有态
+        gap = (c_edges[0] - v_edges[-1]) / 1.0
+        return max(gap, 0.0)
+    except (OSError, ValueError, IndexError):
+        return 0.0
+
+
+def _step_local_analysis(state: dict, step: dict) -> str:
+    """local_analysis：从上一 VASP 步骤目录提取 TOTEN + DOS 图 + 带隙估计。
+
+    读取 dos 步骤（类型 vasp_static_dos）的 OUTCAR（TOTEN）与 DOSCAR/vasprun.xml
+    （绘图与带隙），结果写入 key_results；任何单件失败不阻塞整链，
+    缺什么就在备注里如实说明。
+    """
+    prev = None
+    for s in reversed(state["steps"][: state["current"]]):
+        if s.get("type") in ("vasp_static_dos", "vasp_relax"):
+            prev = s
+            break
+    if prev is None:
+        return "错误：[E_PARAM] local_analysis 步骤缺少前置 VASP 步骤"
+    i = state["steps"].index(prev)
+    d = _step_dir(state["wf_id"], state["project"], i, prev["name"])
+    results: dict = {}
+    notes: list[str] = []
+
+    # 1) TOTEN（OUTCAR，容错 static 段多行）
+    outcar = os.path.join(d, "OUTCAR")
+    if os.path.isfile(outcar):
+        toten_m = _TOTEN_RE.findall(open(outcar, encoding="utf-8", errors="replace").read())
+        if toten_m:
+            results["TOTEN_eV"] = float(toten_m[-1])
+        else:
+            notes.append("OUTCAR 无 TOTEN 行")
+
+    # 2) DOS 图 + 带隙（复用 plotting.plot_dos；失败降级为备注）
+    try:
+        from . import plotting as _plotting
+        msg = _plotting.plot_dos(
+            os.path.join(d, "vasprun.xml"), project=state["project"], save=True)
+        m = re.search(r"DOS 图已生成: (\S+)", msg)
+        if m:
+            results["dos_png"] = m.group(1)
+        notes.append(msg.splitlines()[0])
+    except Exception as e:  # noqa: BLE001
+        notes.append(f"DOS 绘图失败: {type(e).__name__}: {e}")
+
+    # 3) 带隙（DOSCAR 估计值，与 DOS 图独立）
+    doscar = os.path.join(d, "DOSCAR")
+    if os.path.isfile(doscar):
+        gap = _estimate_gap_from_doscar(doscar)
+        results["gap_eV_est"] = round(gap, 4)
+        notes.append("带隙为 DOSCAR 阈值估计值（0.0 表示金属/无法估计）")
+
+    if not results:
+        return (f"错误：[E_PARSE] {step['name']} 未能在 {d} 提取到任何结果"
+                f"（缺 OUTCAR/vasprun.xml/DOSCAR）")
+    step["key_results"] = results
+    step["status"] = "done"
+    step["note"] = "；".join(notes)
+    return (f"[{step['name']}] 能量与 DOS 提取完成: TOTEN={results.get('TOTEN_eV', '?')} eV, "
+            f"带隙(估)={results.get('gap_eV_est', '?')} eV, DOS 图={results.get('dos_png', '?')}")
+
+
 # 类型 → 处理器注册表；新增步骤类型只需加一个同签名的函数
 _STEP_HANDLERS: Dict[str, Callable[[dict, dict], str]] = {
     "local_calc": _step_local_calc,
     "vasp_relax": _step_vasp_relax,
     "vasp_static_dos": _step_vasp_static_dos,
+    "local_analysis": _step_local_analysis,
     "report": _step_report,
     "note": _step_note,
 }

@@ -181,6 +181,14 @@ class TestImages:
         assert out.startswith("错误")
         assert "method" in out
 
+    def test_idpp_real_solver_when_available(self, nacl_pair):
+        """扩展包在位时 IDPP 真跑不回退（CI 与本机装了同款包）。"""
+        pytest.importorskip("pymatgen.analysis.diffusion.neb.pathfinder")
+        out = neb.generate_neb_images(*nacl_pair, images=3, method="idpp", save=False)
+        assert not out.startswith("错误")
+        assert "IDPP 失败已回退" not in out
+        assert "IDPPSolver" in out or "idpp" in out
+
     def test_invalid_images_zero_rejected(self, nacl_pair):
         out = neb.generate_neb_images(*nacl_pair, images=0, save=False)
         assert out.startswith("错误")

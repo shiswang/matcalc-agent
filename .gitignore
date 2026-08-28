@@ -22,3 +22,7 @@ id_rsa*
 clusters.json
 CLUSTERS.md
 remote_workdir_notes.md
+
+# 现场临时脚本（勿入库）
+server/_tmp_*.py
+*_tmp_*.py
