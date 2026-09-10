@@ -29,6 +29,7 @@ def test_bridge_emits_non_mutating_route_envelope():
         "session_id": "s1", "message_id": "m9", "workflow_id": "wf_9",
         "intent": "task_continue", "observed_revision": None,
         "expected_revision": 4, "idempotency_key": "s1:m9", "read_only": True,
+        "bound_workflow_ids": [],
     }
 
 

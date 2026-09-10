@@ -1,6 +1,7 @@
 """界面建模模块回归：ZSL 预检 / 自动构建 / 手动堆叠（全离线）。
 
-样本用固定晶格常数的 LiCl(a=3.54)/NaCl(a=5.64) 构造，保证断言确定性。
+ZSL 用近匹配岩盐对（a≈5.50/5.64）保证秒级出解；大失配对仅用于
+stack_slabs 失配警告（该路径不跑 ZSL）。坐标格式断言不依赖具体晶格常数。
 """
 import re
 import shutil
@@ -48,14 +49,18 @@ def _fence(text: str) -> str:
     return segs[1].removeprefix("\n") if len(segs) >= 2 else ""
 
 
-LICL = _rocksalt(("Li", "Cl"), 3.54)
-NACL = _rocksalt(("Na", "Cl"), 5.64)
+# ZSL 路径：近匹配（失配约 2.5%），避免 LiCl/NaCl 大失配导致搜索数十秒
+FILM_NEAR = _rocksalt(("Li", "Cl"), 5.50)
+SUB_NEAR = _rocksalt(("Na", "Cl"), 5.64)
+# stack_slabs 失配警告用例：大失配对（不调用 ZSL）
+FILM_FAR = _rocksalt(("Li", "Cl"), 3.54)
+SUB_FAR = _rocksalt(("Na", "Cl"), 5.64)
 
 
 # ---------- inspect_interface_match ----------
 
 def test_inspect_lists_terminations():
-    out = mi.inspect_interface_match(LICL, NACL, "0 0 1", "0 0 1")
+    out = mi.inspect_interface_match(FILM_NEAR, SUB_NEAR, "0 0 1", "0 0 1")
     assert out.startswith("ZSL 匹配成功")
     assert "端型组合" in out
     assert "[0]" in out
@@ -63,12 +68,12 @@ def test_inspect_lists_terminations():
 
 
 def test_inspect_bad_miller_rejected():
-    out = mi.inspect_interface_match(LICL, NACL, "0 0", "0 0 1")
+    out = mi.inspect_interface_match(FILM_NEAR, SUB_NEAR, "0 0", "0 0 1")
     assert out.startswith("错误") and "米勒指数" in out
 
 
 def test_bad_poscar_rejected():
-    out = mi.inspect_interface_match("not a poscar", NACL)
+    out = mi.inspect_interface_match("not a poscar", SUB_NEAR)
     assert out.startswith("错误") and "POSCAR 解析失败" in out
 
 
@@ -76,7 +81,7 @@ def test_bad_poscar_rejected():
 
 def test_build_interface_full_pipeline():
     out = mi.build_interface(
-        LICL, NACL, film_miller="0,0,1", substrate_miller="0 0 1",
+        FILM_NEAR, SUB_NEAR, film_miller="0,0,1", substrate_miller="0 0 1",
         film_thickness=8.0, substrate_thickness=8.0, save=False,
     )
     assert "界面模型: LiCl(0 0 1) / NaCl(0 0 1)" in out
@@ -97,14 +102,14 @@ def test_build_interface_save(tmp_path, monkeypatch):
         return str(d)
 
     monkeypatch.setattr(mi, "_out_dir", fake_out_dir)
-    out = mi.build_interface(LICL, NACL, save=True, project="whatever")
+    out = mi.build_interface(FILM_NEAR, SUB_NEAR, save=True, project="whatever")
     assert "已保存: " in out
     saved = list(Path(str(proj_root / "structure")).glob("interface_*.vasp"))
     assert len(saved) == 1 and saved[0].stat().st_size > 500
 
 
 def test_build_interface_bad_term_index():
-    out = mi.build_interface(LICL, NACL, termination_index=99, save=False)
+    out = mi.build_interface(FILM_NEAR, SUB_NEAR, termination_index=99, save=False)
     assert out.startswith("错误") and "termination_index=99" in out
 
 
@@ -118,7 +123,7 @@ def _slab_of(poscar_text: str) -> str:
 
 
 def test_stack_slabs_same_material_no_warning():
-    top, bot = _slab_of(NACL), _slab_of(NACL)
+    top, bot = _slab_of(SUB_NEAR), _slab_of(SUB_NEAR)
     out = mi.stack_slabs(top, bot, gap=2.0, vacuum=12.0)
     assert "总原子数" in out
     assert "面内失配检查通过" in out          # 同材料同超胞 → 无失配警告
@@ -128,6 +133,6 @@ def test_stack_slabs_same_material_no_warning():
 
 
 def test_stack_slabs_mismatch_warns():
-    top, bot = _slab_of(LICL), _slab_of(NACL)
+    top, bot = _slab_of(FILM_FAR), _slab_of(SUB_FAR)
     out = mi.stack_slabs(top, bot)
     assert "- 警告: 面内 a 失配" in out       # |3.54−5.64|/5.64 ≈ 37% >> 3%

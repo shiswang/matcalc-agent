@@ -116,6 +116,7 @@ function callBridge(config, request, signal) {
     cwd: config.matcalcRoot,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    env: { ...process.env, ...(config.env ?? {}) },
   });
   return new Promise((resolve, reject) => {
     let out = "";
@@ -133,6 +134,41 @@ function callBridge(config, request, signal) {
     });
     child.stdin.end(JSON.stringify(request) + "\n");
   });
+}
+
+/** 尽力绑定 session→workflow；失败不阻断对话。 */
+export async function bindWorkflow(config, signal, sessionId, wfId, project) {
+  if (!sessionId || !wfId) return null;
+  try {
+    return await callBridge(config, {
+      op: "bind", session_id: sessionId, wf_id: wfId, project,
+    }, signal);
+  } catch {
+    return null;
+  }
+}
+
+/** 拉取未读后台事件并 ack；无事件返回空数组。 */
+export async function drainInbox(config, signal, sessionId, wfIds, limit = 5) {
+  if (!sessionId) return [];
+  try {
+    const res = await callBridge(config, {
+      op: "inbox_pull", session_id: sessionId,
+      wf_ids: Array.isArray(wfIds) && wfIds.length ? wfIds : undefined,
+      limit,
+    }, signal);
+    const events = res?.events ?? [];
+    for (const ev of events) {
+      if (ev?.event_id) {
+        await callBridge(config, {
+          op: "inbox_ack", session_id: sessionId, event_id: ev.event_id,
+        }, signal).catch(() => null);
+      }
+    }
+    return events;
+  } catch {
+    return [];
+  }
 }
 
 function contextMessage(text) {
@@ -182,6 +218,20 @@ export function apply(ctx, config = {}) {
         const w = result.workflow;
         const tool = result.intent === "task_status" ? "workflow_status" : "advance_workflow";
         contexts.push(`MatCalcAgent 路由：当前会话选择 ${w.project}/${w.wf_id}。按用户意图调用 ${tool}。`);
+        // 持久化 session 焦点，并只向本会话投递该任务的未读后台事件。
+        await bindWorkflow(config, signal, agent.session?.id, w.wf_id, w.project);
+        if (result.intent === "task_continue" || result.intent === "task_status") {
+          const events = await drainInbox(config, signal, agent.session?.id, [w.wf_id], 5);
+          if (events.length) {
+            const lines = events.map((ev) => {
+              const payload = ev.payload && Object.keys(ev.payload).length
+                ? ` ${JSON.stringify(ev.payload).slice(0, 120)}` : "";
+              return `- [${ev.type}] ${ev.wf_id}${payload}`;
+            });
+            contexts.push(
+              `后台事件（本会话已绑定任务，未读 ${events.length} 条，已 ack）：\n${lines.join("\n")}`);
+          }
+        }
       }
       if (contexts.length === 0) return decision;
       return {

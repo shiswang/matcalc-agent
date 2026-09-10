@@ -148,7 +148,11 @@ def _state_path(wf_id: str, project: str) -> str:
 
 
 def _save_state(state: dict) -> None:
-    """原子写回 state.json，避免进程中断留下半截 JSON。"""
+    """原子写回 state.json，避免进程中断留下半截 JSON。
+
+    每次落盘递增 ``revision``，供 expected_revision CAS 与并发陈旧检测。
+    """
+    state["revision"] = int(state.get("revision", 0) or 0) + 1
     path = os.path.join(_wf_dir(state["wf_id"], state["project"]), "state.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -157,6 +161,28 @@ def _save_state(state: dict) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+def _emit_wf_event(event_type: str, state: dict, **payload) -> None:
+    """尽力写 outbox；失败不阻断状态机（延迟导入避免循环依赖）。"""
+    try:
+        from . import workflow_events
+    except ImportError:  # pragma: no cover
+        try:
+            from matcalc import workflow_events
+        except ImportError:
+            return
+    try:
+        workflow_events.emit_event(
+            event_type,
+            state.get("wf_id", ""),
+            state.get("project", ""),
+            revision=state.get("revision"),
+            status=state.get("status"),
+            **payload,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _load_state(wf_id: str, project: str) -> Optional[dict]:
@@ -235,9 +261,9 @@ def list_active_workflows(project: Optional[str] = None,
             f"  {r['wf_id']} | project={r['project']} | template={r['template']} | "
             f"status={r['status']} | progress={r['progress']} | "
             f"current={r['current_step']}/{r['current_status']} | job={r['job_id'] or '-'} | "
-            f"auto_submit={r['auto_submit']}"
+            f"auto_submit={r['auto_submit']} | rev={r['revision']}"
         )
-    lines.append("下一步：仅一个候选时可继续；多个候选必须先按 wf_id/project 选择，再调用 advance_workflow。")
+    lines.append("下一步：仅一个候选时可继续；多个候选必须先按 wf_id/project 选择，再调用 advance_workflow（可带 expected_revision 做 CAS）。")
     return "\n".join(lines)
 
 
@@ -692,7 +718,9 @@ def _next_action(state: dict) -> str:
     if state["current"] >= len(state["steps"]):
         return "所有步骤已完成，再次 advance 即收尾。"
     s = state["steps"][state["current"]]
-    call = f"advance_workflow(wf_id='{state['wf_id']}', project='{state['project']}')"
+    rev = int(state.get("revision", 0) or 0)
+    call = (f"advance_workflow(wf_id='{state['wf_id']}', project='{state['project']}'"
+            + (f", expected_revision={rev}" if rev else "") + ")")
     if s["status"] == "waiting_submit":
         idx = state["current"]
         d = _step_dir(state["wf_id"], state["project"], idx, s["name"])
@@ -711,7 +739,8 @@ def _render_view(state: dict, headline: str) -> str:
         "",
         f"工作流 ID: {state['wf_id']}",
         f"项目: {state['project']} | 模板: {state['template']} | "
-        f"状态: {state['status']} | 进度: {done}/{total}",
+        f"状态: {state['status']} | 进度: {done}/{total} | "
+        f"revision: {int(state.get('revision', 0) or 0)}",
         "",
         "== 步骤 ==",
         _render_steps(state),
@@ -838,6 +867,7 @@ def start_workflow(template: str, project: str, params_json: Optional[Union[str,
         "template": template,
         "project": project,
         "status": "running",           # running | done
+        "revision": 0,                 # _save_state 落盘时 +1
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "params": params,              # 全工作流参数（来自 params_json）
         "current": 0,                  # 当前步骤下标；收尾时等于 len(steps)
@@ -850,13 +880,16 @@ def start_workflow(template: str, project: str, params_json: Optional[Union[str,
     _save_state(state)
     first_msg = _apply_one(state, state["steps"][0], confirm=False)  # prepare 第一步
     _save_state(state)
+    _emit_wf_event("workflow.started", state, step=state["steps"][0].get("name"),
+                   note=first_msg)
     src_note = (f"；结构来源: {params.get('_poscar_source')}" if params.get("_poscar_source")
                 else "")
     return _render_view(state, f"工作流已启动（第一步：{first_msg}{src_note}）")
 
 
 def advance_workflow(wf_id: str, project: str, confirm: bool = False,
-                     auto_submit: Optional[bool] = None) -> str:
+                     auto_submit: Optional[bool] = None,
+                     expected_revision: Optional[int] = None) -> str:
     """【MCP 工具】幂等地推进指定工作流：从当前指针起尽量往前走，遇人工介入即停。
 
     推进规则（对当前指针处的步骤做一次迁移）：
@@ -880,16 +913,26 @@ def advance_workflow(wf_id: str, project: str, confirm: bool = False,
         auto_submit: 三态开关（持久化进 params）。True=后续 vasp 步骤在
             输入就绪时自动提交集群（node/ppn 取自 params）；False=关闭；
             缺省 None=维持现状。
+        expected_revision: 可选 CAS。给定时必须等于当前 state.revision，
+            否则拒绝本次推进（防止基于陈旧快照写入）。
 
     Returns:
         成功：本次推进记录 + 实时步骤视图 + 下一步动作提示；
         工作流收尾时附 "全部步骤完成" 总结。
-        失败：以 "错误：" 开头（未找到对应工作流）。
+        失败：以 "错误：" 开头（未找到工作流 / revision CAS 失败）。
     """
     state = _load_state(wf_id, project)
     if state is None:
         return (f"错误：[E_PARAM] 未找到工作流 '{wf_id}'（project='{project}'）；"
                 "可用 list_workflows(project) 核对已有工作流")
+    if expected_revision is not None:
+        try:
+            from . import session_binding as _sb
+        except ImportError:  # pragma: no cover
+            from matcalc import session_binding as _sb
+        cas = _sb.check_revision(state, expected_revision)
+        if not cas.get("ok"):
+            return cas.get("error", "错误: [E_PARAM] revision CAS 失败")
     if state["status"] == "done":
         # 幂等出口：不再触碰磁盘上的任何产物
         return _render_view(state, "工作流已完成（本次为幂等调用，无副作用）")
@@ -915,6 +958,12 @@ def advance_workflow(wf_id: str, project: str, confirm: bool = False,
         state["current"] = len(state["steps"])
         state["status"] = "done"         # 收尾
     _save_state(state)
+    _emit_wf_event(
+        "workflow.done" if state["status"] == "done" else "workflow.advanced",
+        state,
+        step=state["steps"][state["current"] - 1].get("name") if state["current"] else None,
+        log=("\n".join(log) if log else None),
+    )
 
     head = "== 本次推进 ==\n" + ("\n".join(log) if log else "（无可执行动作）")
     if state["status"] == "done":

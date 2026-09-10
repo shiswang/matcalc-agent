@@ -239,3 +239,39 @@ def test_note_fallback_without_vault_note(clean_wf, monkeypatch):
     assert fallback.is_file(), out
     text = fallback.read_text(encoding="utf-8")
     assert wf in text and "工作流" in text
+
+
+# ---------- revision 递增与 CAS ----------
+
+def test_revision_increments_on_every_save(clean_wf):
+    wf = _extract_wfid(mw.start_workflow("smoke_local_chain", PROJ))
+    st1 = _load(wf)
+    assert int(st1.get("revision", 0)) >= 1
+    before = int(st1["revision"])
+    mw.advance_workflow(wf, PROJ)
+    st2 = _load(wf)
+    assert int(st2["revision"]) > before
+
+
+def test_advance_expected_revision_cas(clean_wf):
+    wf = _extract_wfid(mw.start_workflow("smoke_local_chain", PROJ))
+    rev = int(_load(wf)["revision"])
+    # 错误 revision：拒绝且不推进
+    bad = mw.advance_workflow(wf, PROJ, expected_revision=rev + 99)
+    assert "CAS" in bad or "revision" in bad
+    assert int(_load(wf)["revision"]) == rev
+    assert _load(wf)["status"] == "running"
+    # 正确 revision：可推进
+    ok = mw.advance_workflow(wf, PROJ, expected_revision=rev)
+    assert "本次推进" in ok or "全部步骤完成" in ok or "工作流" in ok
+    assert int(_load(wf)["revision"]) > rev
+
+
+def test_status_view_exposes_revision_for_cas(clean_wf):
+    wf = _extract_wfid(mw.start_workflow("smoke_local_chain", PROJ))
+    view = mw.workflow_status(wf, PROJ)
+    assert "revision:" in view
+    # 下一步提示应带上 expected_revision，便于模型做 CAS
+    assert "expected_revision=" in view
+    listed = mw.list_active_workflows(PROJ)
+    assert "rev=" in listed

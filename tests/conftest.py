@@ -100,8 +100,8 @@ def clean_test_project():
 
 
 # ---------- 合成 Bader 样例（格式忠实于 Henkelman ACF.dat；无真实 ACF 存档） ----------
-# 注意：parse_bader_acf 当前按「原子序号 → 第 idx 个 ZVAL」映射，
-# 多原子体系中只有前 N_element 个原子能拿到净电荷 —— 本样例如实锁定该现状。
+# 正确逐原子映射见 parse_bader_acf(composition=...)；旧「idx→第 idx 个 ZVAL」
+# 仅作无 composition 时的兼容路径，完整断言在 tests/test_parsing.py。
 
 _ACF_TEXT = """\
     #         X           Y           Z        CHARGE     MIN DIST   ATOMIC VOL
