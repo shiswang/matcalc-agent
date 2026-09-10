@@ -19,7 +19,7 @@ import json
 import os
 import re
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 from .common import OUTPUTS_DIR, out_dir
 from . import organize
@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover
     from pymatgen.core.structure import Structure as _Structure
 
 __all__ = ["start_workflow", "advance_workflow", "workflow_status",
-           "list_workflows", "WF_TEMPLATES", "TOOLS"]
+           "list_workflows", "list_active_workflows", "WF_TEMPLATES", "TOOLS"]
 
 SCHEMA_VERSION = 1  # state.json 结构版本；后续字段变更须递增
 
@@ -148,11 +148,15 @@ def _state_path(wf_id: str, project: str) -> str:
 
 
 def _save_state(state: dict) -> None:
-    """把状态字典写回 state.json（UTF-8、LF，ensure_ascii=False 保中文可读）。"""
+    """原子写回 state.json，避免进程中断留下半截 JSON。"""
     path = os.path.join(_wf_dir(state["wf_id"], state["project"]), "state.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def _load_state(wf_id: str, project: str) -> Optional[dict]:
@@ -162,6 +166,155 @@ def _load_state(wf_id: str, project: str) -> Optional[dict]:
         return None
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _iter_workflow_states(project: Optional[str] = None):
+    """只读遍历 workflow state，返回 (state, state_path, mtime)。"""
+    roots = [_wf_root(project)] if project else []
+    if project is None and os.path.isdir(OUTPUTS_DIR):
+        roots = [os.path.join(OUTPUTS_DIR, name, "workflows")
+                 for name in os.listdir(OUTPUTS_DIR)]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for d in sorted(os.listdir(root)):
+            sp = os.path.join(root, d, "state.json")
+            if not os.path.isfile(sp):
+                continue
+            try:
+                with open(sp, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                yield state, sp, os.path.getmtime(sp)
+            except (OSError, ValueError, TypeError):
+                continue
+
+
+def _active_workflow_records(project: Optional[str] = None,
+                             workflow_ids: Optional[list[str]] = None) -> list[dict]:
+    """构造未完成 workflow 的结构化只读记录（state.json 是唯一真源）。"""
+    wanted = set(workflow_ids or [])
+    records = []
+    for st, sp, mtime in _iter_workflow_states(project):
+        if st.get("status") == "done" or (wanted and st.get("wf_id") not in wanted):
+            continue
+        steps = st.get("steps") or []
+        current = st.get("current", 0)
+        current_step = steps[current] if isinstance(current, int) and 0 <= current < len(steps) else {}
+        records.append({
+            "wf_id": st.get("wf_id", ""),
+            "project": st.get("project", ""),
+            "template": st.get("template", ""),
+            "status": st.get("status", ""),
+            "progress": f"{sum(1 for s in steps if s.get('status') == 'done')}/{len(steps)}",
+            "current_step": current_step.get("name", "-"),
+            "current_status": current_step.get("status", "-"),
+            "job_id": current_step.get("submitted_job", ""),
+            "auto_submit": bool((st.get("params") or {}).get("auto_submit", False)),
+            # 兼容旧 state；新状态可用 revision 做并发/陈旧请求标记。
+            "revision": int(st.get("revision", 0) or 0),
+            "state_path": sp,
+            "mtime": mtime,
+        })
+    return sorted(records, key=lambda x: x["mtime"], reverse=True)
+
+
+def list_active_workflows(project: Optional[str] = None,
+                          workflow_ids: Optional[list[str]] = None) -> str:
+    """列出所有未完成工作流，作为跨聊天任务恢复入口（内部只读原语）。
+
+    只读扫描 outputs/*/workflows/*/state.json；不推进、不提交、不修改状态。
+    project 可选：给出时只扫描指定项目；不提供时扫描全部项目。
+    """
+    rows = _active_workflow_records(None if workflow_ids else project, workflow_ids)
+    if not rows:
+        scope = f"项目 {project}" if project and not workflow_ids else "当前会话焦点" if workflow_ids else "全部项目"
+        return f"暂无未完成工作流（范围：{scope}）"
+    lines = ["== 未完成工作流（只读恢复清单） =="]
+    for r in rows:
+        lines.append(
+            f"  {r['wf_id']} | project={r['project']} | template={r['template']} | "
+            f"status={r['status']} | progress={r['progress']} | "
+            f"current={r['current_step']}/{r['current_status']} | job={r['job_id'] or '-'} | "
+            f"auto_submit={r['auto_submit']}"
+        )
+    lines.append("下一步：仅一个候选时可继续；多个候选必须先按 wf_id/project 选择，再调用 advance_workflow。")
+    return "\n".join(lines)
+
+
+def startup_recovery_summary(project: Optional[str] = None,
+                             workflow_ids: Optional[list[str]] = None) -> str:
+    """按作用域生成恢复摘要；默认全局仅供显式控制台查询使用。"""
+    rows = _active_workflow_records(None if workflow_ids else project, workflow_ids)
+    if not rows:
+        return "启动恢复：未发现未完成工作流。"
+    lines = [f"启动恢复：发现 {len(rows)} 个未完成工作流；未自动提交或推进。"]
+    for r in rows:
+        lines.append(
+            f"- {r['project']} / {r['wf_id']}：{r['progress']}，"
+            f"当前 {r['current_step']}({r['current_status']})，"
+            f"作业 {r['job_id'] or '未提交'}"
+        )
+    return "\n".join(lines)
+
+
+def _mentioned_workflows(request: str, rows: list[dict]) -> list[dict]:
+    """从已发现的记录中做显式、边界敏感的文本寻址。"""
+    text = request or ""
+    matched = []
+    for record in rows:
+        wf = str(record.get("wf_id") or "")
+        project = str(record.get("project") or "")
+        wf_hit = bool(wf and re.search(r"(?<![A-Za-z0-9])" + re.escape(wf) +
+                       r"(?![A-Za-z0-9])", text, re.I))
+        project_hit = bool(project and re.search(r"(?<![A-Za-z0-9])" + re.escape(project) +
+                            r"(?![A-Za-z0-9])", text, re.I))
+        if wf_hit or project_hit:
+            matched.append(record)
+    return matched
+
+
+def route_workflow_request(request: str = "", project: Optional[str] = None,
+                           wf_id: Optional[str] = None,
+                           workflow_ids: Optional[list[str]] = None) -> dict:
+    """安全解析“继续/查看状态”类请求，返回选择结果，不执行推进。
+
+    显式写在当前消息里的 workflow ID/项目名优先于历史 session 焦点；
+    其次才使用调用方明确传入的 wf_id/project 或唯一 foreground 候选。
+    当显式文本跨越当前 session 作用域时，允许从全局只读任务索引解析，
+    但永远不按 mtime 猜测目标。返回 ``selected``/``choose``/``none``。
+    """
+    scoped_rows = _active_workflow_records(None if workflow_ids else project, workflow_ids)
+    addressed = _mentioned_workflows(request, scoped_rows)
+    # 明确写出目标即可跨 session 激活定向读取；不把全局结果用于裸控制词。
+    if not addressed and request:
+        # 这是显式文本寻址的第二次尝试，不能被旧 session project 截断；
+        # 若仍未命中，后续只使用原有 scoped_rows，不做全局回退选择。
+        global_rows = _active_workflow_records(None)
+        addressed = _mentioned_workflows(request, global_rows)
+    if len(addressed) == 1:
+        return {"action": "selected", "reason": "explicit_text_target", "workflow": addressed[0]}
+    if len(addressed) > 1:
+        return {"action": "choose", "reason": "multiple_text_targets", "candidates": addressed,
+                "message": "消息命中了多个工作流，请提供完整 wf_id 后再继续。"}
+
+    if wf_id:
+        exact = [r for r in scoped_rows if r["wf_id"] == wf_id]
+        if exact:
+            return {"action": "selected", "reason": "explicit_wf_id", "workflow": exact[0]}
+        return {"action": "none", "reason": "wf_id_not_found", "wf_id": wf_id}
+
+    rows = scoped_rows
+    if project:
+        project_rows = [r for r in rows if r.get("project") == project]
+        if project_rows:
+            rows = project_rows
+    if len(rows) == 1:
+        reason = "single_project_candidate" if project else "single_active_candidate"
+        return {"action": "selected", "reason": reason, "workflow": rows[0]}
+    if len(rows) > 1:
+        return {"action": "choose", "reason": "multiple_active_candidates", "candidates": rows,
+                "message": "发现多个未完成工作流，请提供 wf_id 或 project 后再继续。"}
+    return {"action": "none", "reason": "no_active_workflow", "message": "暂无可继续的未完成工作流。"}
 
 
 def list_workflows(project: str) -> str:
@@ -595,7 +748,7 @@ def _apply_one(state: dict, step: dict, confirm: bool) -> str:
 
 # ==================== 对外三个 MCP 工具 ====================
 
-def start_workflow(template: str, project: str, params_json: Optional[str] = None) -> str:
+def start_workflow(template: str, project: str, params_json: Optional[Union[str, dict]] = None) -> str:
     """【MCP 工具】按内置模板启动一个新的多步工作流，并立即准备第一步。
 
     内置模板（WF_TEMPLATES）：
@@ -603,7 +756,9 @@ def start_workflow(template: str, project: str, params_json: Optional[str] = Non
       → final_note(note)，三步全离线，用于验证状态机跑通；
     - nmo_parent_compare: parent_relax(vasp_relax) → parent_dos(vasp_static_dos)
       → formation_energy(local_calc) → compare_report(report)
-      → result_note(note)，两步 VASP 需人工提交集群。
+      → result_note(note)，两步 VASP 需人工提交集群；
+    - relax_dos_standard: relax(vasp_relax) → dos(vasp_static_dos)
+      → extract(local_analysis) → summary_report(report) → final_note(note)，通用标准链。
 
     状态落盘于 outputs/<project>/workflows/<wf_id>/state.json，
     wf_id = "<template>_<unix秒>"；随后对第一步执行一次状态迁移
@@ -613,7 +768,7 @@ def start_workflow(template: str, project: str, params_json: Optional[str] = Non
     Args:
         template: 模板名，必须是 WF_TEMPLATES 中的键。
         project: 项目名，决定输出目录 outputs/<project>/workflows/。
-        params_json: 可选 JSON 对象字符串，作为全工作流参数透传给各步骤。支持键：
+        params_json: 可选 JSON 对象字符串或已解析的 JSON 对象，作为全工作流参数透传给各步骤。支持键：
             - "E_O2": <float> —— formation_energy 步骤的氧参考化学势；
             - "auto_submit": true —— vasp 步骤就绪后自动提交集群；
             - "node"/"ppn": 自动提交目标节点与核数（默认 master/8）；
@@ -633,13 +788,18 @@ def start_workflow(template: str, project: str, params_json: Optional[str] = Non
         return f"错误：[E_PARAM] 未知模板 '{template}'；可用模板: {avail}"
     params: dict = {}
     if params_json:
-        try:
-            parsed = json.loads(params_json)
-        except (TypeError, ValueError) as e:
-            return f"错误：[E_PARSE] params_json 不是合法 JSON（{e}）；示例: '{{\"E_O2\": 2.0}}'"
-        if not isinstance(parsed, dict):
-            return "错误：[E_PARAM] params_json 需为 JSON 对象；示例: '{\"E_O2\": 2.0}'"
-        params = parsed
+        if isinstance(params_json, dict):
+            params = dict(params_json)
+        elif isinstance(params_json, str):
+            try:
+                parsed = json.loads(params_json)
+            except (TypeError, ValueError) as e:
+                return f"错误：[E_PARSE] params_json 不是合法 JSON（{e}）；示例: '{{\"E_O2\": 2.0}}'"
+            if not isinstance(parsed, dict):
+                return "错误：[E_PARAM] params_json 需为 JSON 对象；示例: '{\"E_O2\": 2.0}'"
+            params = parsed
+        else:
+            return "错误：[E_PARAM] params_json 需为 JSON 对象或 JSON 字符串；示例: '{\"E_O2\": 2.0}'"
 
     # 真实结构注入（S5）：poscar_path / poscar_text 双通道，启动期即校验。
     # 验证后的文本归一存入 params["_poscar_validated_text"]（随 state.json 落盘），
@@ -783,4 +943,5 @@ def workflow_status(wf_id: str, project: str) -> str:
 
 
 # 面向 main.py 注册 MCP 工具的导出清单
+# list_active_workflows 是内部恢复/路由原语，不新增 MCP 工具，保持 49 工具契约。
 TOOLS = [start_workflow, advance_workflow, workflow_status]

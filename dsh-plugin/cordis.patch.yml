@@ -1,0 +1,8 @@
+# MatCalcAgent continuity bridge: injects read-only recovery/routing context
+# at DSH agent pre-step boundaries. It never submits or advances a workflow.
+- insert:
+    - id: matcalc-continuity
+      name: '@matcalc/dsh-continuity'
+      config:
+        matcalcRoot: 'D:/path/to/matcalc-agent'
+        python: 'python'

@@ -36,7 +36,8 @@ def test_get_node_valid():
     if not _has_real_topology():
         pytest.skip("本机真实拓扑(master/hzw)不在——CI example 引导下跳过实机断言")
     n = clusters.get_node("master")
-    assert n["host"].startswith("ls@")
+    # 只验证真实配置已加载，不绑定某位用户/某个 IP（本机与 CI 配置可不同）。
+    assert isinstance(n["host"], str) and n["host"].strip()
     assert clusters.get_node("hzw")["lammps_exe"]  # hzw 必须登记 lmp 路径
 
 

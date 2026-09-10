@@ -15,7 +15,7 @@ matcalc-agent/
 │   ├── matcalc/         # 13 个功能模块包（structures/interfaces/lammps/neb/
 │   │                    #   parsing/plotting/analysis/workflows/jobs/...）
 │   └── outputs/         # 生成产物（POSCAR/OUTCAR/报告/workflow 状态）
-├── tests/               # 176 项离线回归（CI 同源）
+├── tests/               # 202 项离线回归（CI 同源）
 ├── .github/workflows/   # pytest 门禁
 ├── clusters.example.json
 ├── scripts/run_server.bat
@@ -31,7 +31,7 @@ matcalc-agent/
 - [x] **M4**：原计划 LAMMPS → 实战变阵为作业守护（submit_and_watch/check_job 反查/LAMMPS 已由 S3 提前补齐）
 - [x] **M5**：自动化闭环 —— workflow 状态机 + auto_submit 三态开关 + params_json 结构注入（08-27 摘冠：真实 POSCAR 注入 → 3712.master 自动 qsub 实演认证）
 
-**当前规模**：49 个 MCP 工具 · 183 项测试 · GitHub Actions CI 门禁 · NEB 支持 IDPP 弹性插值（pymatgen-analysis-diffusion）
+**当前规模**：49 个 MCP 工具 · 202 项测试 · GitHub Actions CI 门禁 · NEB 支持 IDPP 弹性插值（pymatgen-analysis-diffusion）
 
 ## 运行 MCP Server
 
@@ -165,4 +165,63 @@ workflow_status("<wf_id>", "NaCl_standard")
 .venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-GitHub Actions 自动跑同一套 185 项离线回归，绿码才合入 main。
+GitHub Actions 自动跑同一套 210 项离线回归，绿码才合入 main。
+
+### 7. 长任务连续性与会话隔离
+
+MatCalcAgent 采用“**聊天是视图，workflow 是任务，HPC job 是执行，产物是证据**”的边界：
+
+```text
+DSH session  ≠  workflow_id  ≠  scheduler job_id  ≠  scientific result
+```
+
+workflow 的权威状态保存在 `outputs/<project>/workflows/<wf_id>/state.json`；聊天只保存近期对话和任务引用，不承担任务状态。任务恢复原语是服务端内部函数，不额外占用 MCP 工具名额，因此 MCP 契约仍为 **49 个工具**：
+
+```python
+list_active_workflows(project=None)                          # 显式任务中心查询
+startup_recovery_summary(project, workflow_ids)               # 仅按焦点生成摘要
+route_workflow_request("继续", project, wf_id, workflow_ids)  # 只读寻址
+```
+
+路由与召回规则：
+
+- **普通聊天默认零召回**：不注入全局 active workflow，也不写入 workflow；
+- **新任务直接交给 DSH 智能体**：`NaCl VASP relax_dos_standard` 等消息不被 bridge 改写，模型可以调用已有 `build_structure`、`start_workflow` 等工具；
+- **控制面按需读取**：只有明确的状态/继续请求才查询任务；裸“继续”还要求当前 session 仍有唯一、有效的任务焦点；
+- **多任务拒绝猜测**：同一 session 绑定多个 active workflow 时返回 `choose`，必须指定 `wf_id` 或项目；
+- **会话焦点从 DSH 持久化 `tool/call` / `tool/result` 事件重建**，重启不依赖进程内存；普通话题发生后，裸控制词不会自动劫持旧任务；
+- 状态查询、路由和恢复摘要均为只读；真正推进仍由模型明确调用 `advance_workflow`，提交由 workflow 的 `auto_submit` 与幂等护栏控制。
+
+DSH bridge 位于 `dsh-plugin/`：它现在是**控制面门卫/定向召回器**，不是第二个任务编排器；`agent/pre-step` 对普通消息和新任务 no-op，只在任务控制请求需要消歧时注入短上下文。配置中的 `matcalcRoot` 由 Web profile 层覆盖为本机仓库路径。这样既保留 49 个 MCP 工具，也避免未相关任务污染当前会话。
+
+相关成熟模式：LangGraph 的 thread/checkpoint、Temporal 的 Workflow ID/Run ID 与 Query/Signal/Update、OpenAI Agents SDK 的 Session、Letta 的上下文层级。它们共同说明：**会话历史不是长任务状态，任务状态也不应广播到每个会话**。
+
+本地 Web 验证（当前 `http://127.0.0.1:3080`）：重启后 `web` profile 成功加载 `@matcalc/dsh-continuity`；隔离会话的普通 Python 话题未产生 continuity 注入；UTF-8 材料任务真实调用了 `mcp__matcalc__build_structure` 与 `mcp__matcalc__start_workflow`，说明 bridge 没有拦截新任务。
+
+### 独立 MatCalcAgent Web
+
+专用入口：`http://127.0.0.1:3081`，启动脚本 `scripts/start_matcalc_web.bat`。
+
+**必须使用独立 `DSH_HOME`**，否则两个实例会共用会话与工作区：
+
+```bat
+set "DSH_HOME=C:\Users\dell\.dsh-matcalc"
+node C:\Users\dell\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\lib\bin.js --profile matcalc-web --port 3081 --no-open
+```
+
+DSH 的家目录优先级为：显式配置 > `$DSH_HOME` > `~/.dsh`。会话（`sessions/`）、工作区与界面状态（`storages/`）、凭据（`.credentials.yaml`）都归属 `DSH_HOME`，**不按端口或 profile 区分**。因此仅创建新 profile 并不能隔离会话，只有换 `DSH_HOME` 才是真隔离。
+
+独立 home 的组成：
+
+```text
+C:\Users\dell\.dsh-matcalc\
+├── settings.yaml          模型与预设设置
+├── .credentials.yaml      凭据（复制自 ~/.dsh）
+├── .agent-presets\        自定义 agent 预设
+└── profiles\
+    ├── node_modules       指向 ~/.dsh 的 junction（共享已装依赖）
+    └── matcalc-web\       专用 profile（含 MCP 与 continuity 插件）
+```
+
+隔离验证结果：`3080` 见 74 个会话、5 个工作区；`3081` 见 0 个会话（独立存储），其会话真实调用 `mcp__matcalc__parse_poscar`，且 `3080` 会话数不受影响。两个实例共享同一份 `server/outputs/<project>/workflows/` 任务真相与 49 个 MCP 工具。
+

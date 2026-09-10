@@ -108,6 +108,11 @@ def test_list_workflows_reports_entries(clean_wf):
 
 # ---------- 报错分支 ----------
 
+def test_params_object_accepted(clean_wf):
+    out = mw.start_workflow("smoke_local_chain", PROJ, params_json={"auto_submit": False})
+    assert "工作流 ID:" in out
+
+
 def test_unknown_template_rejected(clean_wf):
     out = mw.start_workflow("no_such_tpl", PROJ)
     assert out.startswith("错误") and "未知模板" in out
