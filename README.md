@@ -1,25 +1,61 @@
 # MatCalcAgent — 材料计算科研助手（工程代码）
 
-基于 DeepSeek Harness（DSH）扩展层实现的个人材料计算科研助手。
+基于 MCP 的确定性材料计算工具层（pymatgen / ASE / VASP），**不绑定特定智能体**。
 
-- 项目知识文档与进度：见 Obsidian Vault `20_项目/MatCalcAgent/`
-- 本目录为工程代码（Vault 外），含 MCP Server 骨架、Skills、profile 配置
+| 你是谁 | 先看 |
+|--------|------|
+| 任意支持 MCP 的 Agent（Claude Code / Cursor / 自建…） | 本文「四步上手」+ [`MCP.md`](MCP.md) |
+| Claude Code / Cursor 配置片段 | [`adapters/`](adapters/) |
+| 编码/协作 Agent | [`AGENTS.md`](AGENTS.md)（路径禁区、工具契约、自检） |
+| 使用 DSH 会话隔离 | 本文后半「独立 MatCalcAgent Web」（可选） |
+| 私密集群/密钥交接 | [`adapters/HANDOFF_PRIVATE.template.md`](adapters/HANDOFF_PRIVATE.template.md)（填好勿提交） |
+| 项目知识与进度 | Obsidian Vault `20_项目/MatCalcAgent/`（工程仓库外） |
+
+
+---
+
+## 四步上手（新机器）
+
+```bat
+REM 1) 依赖
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+
+REM 2) 集群配置（可先不填，离线工具仍可用）
+copy clusters.example.json clusters.json
+
+REM 3) 离线验收（不连集群、不装 DSH）
+powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1
+REM   期望：SMOKE PASS 且 tool_count=62
+
+REM 4) 接入你的 Agent（MCP stdio）
+scripts\run_mcp.bat
+REM   客户端配置片段见 MCP.md
+```
+
+通过第 3 步后，任意 MCP 客户端挂上即可调用 62 个工具。
+
+---
 
 ## 目录结构
 
 ```
 matcalc-agent/
+├── AGENTS.md              # 所有 Agent 项目规矩
+├── MCP.md                 # 工具接入与场景调用顺序
 ├── server/
-│   ├── main.py          # 入口：49 个 @mcp.tool 薄封装（按模块 TOOLS 清单注册）
-│   ├── remote.py        # ssh/scp 单点（双节点白名单 + 诊断侧日志）
-│   ├── matcalc/         # 13 个功能模块包（structures/interfaces/lammps/neb/
-│   │                    #   parsing/plotting/analysis/workflows/jobs/...）
-│   └── outputs/         # 生成产物（POSCAR/OUTCAR/报告/workflow 状态）
-├── tests/               # 202 项离线回归（CI 同源）
-├── .github/workflows/   # pytest 门禁
+│   ├── main.py            # 入口：61 个 @mcp.tool 注册
+│   ├── remote.py          # ssh/scp 单点
+│   ├── matcalc/           # 功能模块包
+│   └── outputs/           # 生成产物（不入 git）
+├── tests/                 # 离线回归（CI 同源）
+├── dsh-plugin/            # 可选：DSH 会话连续性
+├── scripts/
+│   ├── run_mcp.bat        # 启动 MCP（Agent 无关）
+│   ├── smoke_local.ps1    # 离线验收
+│   └── start_matcalc_web.bat  # 可选 DSH Web
 ├── clusters.example.json
-├── scripts/run_server.bat
-└── .venv/               # pymatgen / pymatgen-analysis-diffusion / ase / fastmcp
+└── requirements.txt
 ```
 
 ## 里程碑状态（2026-08-27 全数达成）
@@ -31,22 +67,16 @@ matcalc-agent/
 - [x] **M4**：原计划 LAMMPS → 实战变阵为作业守护（submit_and_watch/check_job 反查/LAMMPS 已由 S3 提前补齐）
 - [x] **M5**：自动化闭环 —— workflow 状态机 + auto_submit 三态开关 + params_json 结构注入（08-27 摘冠：真实 POSCAR 注入 → 3712.master 自动 qsub 实演认证）
 
-**当前规模**：49 个 MCP 工具 · 202 项测试 · GitHub Actions CI 门禁 · NEB 支持 IDPP 弹性插值（pymatgen-analysis-diffusion）
+**当前规模**：49 个 MCP 工具 · 离线回归 + CI · NEB 支持 IDPP · 会话 binding/outbox/CAS（S7）
 
 ## 运行 MCP Server
 
 ```bat
-scripts\run_server.bat
+scripts\run_mcp.bat
 ```
 
-或直接：
+默认 stdio，供任意 MCP 客户端以 subprocess 拉起。详见 [`MCP.md`](MCP.md)。
 
-```bat
-.venv\Scripts\python.exe server\main.py
-```
-
-默认以 stdio 传输运行，供 DSH 的 MCP 客户端（`dsh-mcp-client`）以
-subprocess 方式拉起连接。DSH 侧连接配置见 Vault 项目笔记 / `dsh.profile`。
 
 ## 使用说明
 
@@ -133,11 +163,11 @@ workflow_status("<wf_id>", "NaCl_standard")
 - VASP 步骤可用 `auto_submit=true` 自动提交，也可人工提交后将 `OUTCAR` 放回对应步骤目录
 - 占位结构（未注入真实 POSCAR）会被护栏拦截，不会误提交集群
 
-### 4. 工具族速查（49 个）
+### 4. 工具族速查（61 个）
 
 | 族 | 工具 |
 |---|---|
-| 建模 | build_structure · parse_poscar · make_supercell · cleave_surface |
+| 建模 | build_structure · parse_poscar · make_supercell · cleave_surface · import_structure · build_from_spacegroup · edit_structure · primitive_cell · symmetry_report · view_structure_ase |
 | 输入生成 | generate_vasp_inputs · generate_band/dos/optical/elastic/eos/bader_inputs · generate_sbatch |
 | 解析诊断 | parse_vasp_output · analyze_vasprun · diagnose_vasp_error · parse_bader_acf |
 | 绘图分析 | plot_dos · plot_pdos · plot_band · fit_eos |
@@ -146,6 +176,7 @@ workflow_status("<wf_id>", "NaCl_standard")
 | 界面/LAMMPS/NEB | build_interface · inspect_interface_match · stack_slabs · build_lammps_data · generate_lammps_inputs · parse_lammps_log · generate_neb_endpoints/images/incar |
 | 工作流 | start_workflow · advance_workflow · workflow_status |
 | 智能建议 | suggest_u · suggest_magnetism · analyze_structure · compare_structures · record_feedback |
+| Materials Project | fetch_mp_structure · mp_workflow_guide · 模板 mp_relax_static |
 | 治理报告 | organize_outputs · export_report · export_result_note |
 
 ### 5. 错误码约定
@@ -175,7 +206,7 @@ MatCalcAgent 采用“**聊天是视图，workflow 是任务，HPC job 是执行
 DSH session  ≠  workflow_id  ≠  scheduler job_id  ≠  scientific result
 ```
 
-workflow 的权威状态保存在 `outputs/<project>/workflows/<wf_id>/state.json`；聊天只保存近期对话和任务引用，不承担任务状态。任务恢复原语是服务端内部函数，不额外占用 MCP 工具名额，因此 MCP 契约仍为 **49 个工具**：
+workflow 的权威状态保存在 `outputs/<project>/workflows/<wf_id>/state.json`；聊天只保存近期对话和任务引用，不承担任务状态。任务恢复原语是服务端内部函数，不额外占用 MCP 工具名额，因此 MCP 契约仍为 **62 个工具**：
 
 ```python
 list_active_workflows(project=None)                          # 显式任务中心查询

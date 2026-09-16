@@ -41,18 +41,19 @@ mcp = FastMCP("matcalc-agent")
 
 try:  # 兼容 python server/main.py（脚本）与 from server import main（包）两种运行方式
     from .matcalc import (
-        analysis, analysis_ext, interfaces, lammps, monitor, neb, organize,
+        analysis, analysis_ext, interfaces, lammps, materials_project, monitor, mp_thermo, neb, organize,
         parsing, plotting, structures, suggest, vault_note, vasp_inputs, workflows,
     )
 except ImportError:  # pragma: no cover
     from matcalc import (
-        analysis, analysis_ext, interfaces, lammps, monitor, neb, organize,
+        analysis, analysis_ext, interfaces, lammps, materials_project, monitor, mp_thermo, neb, organize,
         parsing, plotting, structures, suggest, vault_note, vasp_inputs, workflows,
     )
 
 for _fn in (
-    structures.build_structure, structures.parse_poscar,
-    structures.make_supercell, structures.cleave_surface,
+    *structures.TOOLS,
+    *materials_project.TOOLS,
+    *mp_thermo.TOOLS,
     parsing.parse_vasp_output, parsing.diagnose_vasp_error,
     parsing.analyze_vasprun, parsing.parse_bader_acf,
     plotting.plot_dos, plotting.plot_pdos, plotting.plot_band,
@@ -62,6 +63,7 @@ for _fn in (
     vasp_inputs.generate_band_inputs, vasp_inputs.generate_dos_inputs,
     vasp_inputs.generate_optical_inputs, vasp_inputs.generate_elastic_inputs,
     vasp_inputs.generate_eos_inputs, vasp_inputs.generate_bader_inputs,
+    vasp_inputs.generate_aimd_inputs,
     # S3 扩展：界面建模 / LAMMPS / NEB / 知识片段 / 工作流编排
     *interfaces.TOOLS,
     *lammps.TOOLS,

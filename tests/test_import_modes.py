@@ -27,7 +27,7 @@ def _run_script_mode(code: str, tmp_path) -> tuple[int, str]:
 
 
 def test_script_mode_boot_registers_full_toolset(tmp_path):
-    """python -c（等价 python server/main.py 的 sys.path 布局）→ 49 工具全注册。"""
+    """python -c（等价 python server/main.py 的 sys.path 布局）→ 62 工具全注册。"""
     from tests.test_registry import EXPECTED_TOOLS  # noqa: PLC0415
     code = (
         "import sys, os, asyncio\n"

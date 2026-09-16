@@ -405,3 +405,439 @@ def cleave_surface(poscar_text: str, miller: str, slab_height: float = 12.0, vac
         "提示: 不同端型表面能不同，建议分别计算后比较。",
     ]
     return "\n".join(info) + "\n```\n" + _to_vasp5_poscar(first) + "```"
+
+
+# ─────────────────── S8：ASE/MP 向建模栈（一期） ───────────────────
+
+def _parse_any_structure(text: str, fmt: str = "auto") -> tuple[Optional[Structure], str]:
+    """解析 POSCAR / CIF 文本；返回 (structure, 识别格式) 或 (None, 错误)。"""
+    raw = (text or "").strip()
+    if not raw:
+        return None, "错误：[E_PARAM] 结构文本为空"
+    candidates: list[str]
+    if fmt in ("auto", "", None):
+        head = raw.lstrip()[:80].lower()
+        if head.startswith("data_") or "_cell_length_a" in raw[:2000].lower():
+            candidates = ["cif", "poscar"]
+        else:
+            candidates = ["poscar", "cif"]
+    elif str(fmt).lower() in ("poscar", "vasp"):
+        candidates = ["poscar"]
+    elif str(fmt).lower() == "cif":
+        candidates = ["cif"]
+    else:
+        return None, f"错误：[E_PARAM] format 仅支持 auto|poscar|cif，收到 '{fmt}'"
+
+    last_err = ""
+    for kind in candidates:
+        try:
+            if kind == "poscar":
+                st = Poscar.from_str(raw).structure
+            else:
+                from pymatgen.io.cif import CifParser
+
+                parser = CifParser.from_str(raw)
+                structs = parser.parse_structures(primitive=False)
+                if not structs:
+                    last_err = "CIF 无结构"
+                    continue
+                st = structs[0]
+            if st is None or len(st) == 0:
+                last_err = "解析结果为空结构"
+                continue
+            return st, kind
+        except Exception as e:  # noqa: BLE001
+            last_err = f"{type(e).__name__}: {e}"
+            continue
+    return None, f"错误：[E_PARSE] 无法解析结构文本（{last_err}）"
+
+
+def import_structure(
+    structure_text: str,
+    fmt: str = "auto",
+    save: bool = True,
+    project: Optional[str] = None,
+) -> str:
+    """导入 POSCAR 或 CIF，归一为项目统一 VASP5 POSCAR。
+
+    Args:
+        structure_text: POSCAR 或 CIF 原文。
+        fmt: auto | poscar | cif（auto 按内容嗅探）。
+        save: 是否写入 outputs/<project>/structures/。
+        project: 项目名。
+
+    Returns:
+        摘要 + 归一 POSCAR；解析失败返回"错误："开头。
+    """
+    st, kind = _parse_any_structure(structure_text, fmt)
+    if st is None:
+        return kind
+    poscar_str = _to_vasp5_poscar(st)
+    save_note = ""
+    if save:
+        fname = f"import_{st.composition.reduced_formula}_{int(time.time())}.vasp"
+        fpath = os.path.join(_out_dir(project, "structure"), fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(poscar_str)
+        save_note = f"\n已保存: {fpath}"
+    return (
+        f"识别格式: {kind}\n"
+        f"## 结构摘要\n{_structure_summary(st)}\n"
+        f"## POSCAR\n```\n{poscar_str}\n```{save_note}"
+    )
+
+
+def build_from_spacegroup(
+    composition: str,
+    spacegroup: int,
+    lattice_parameters: Optional[str] = None,
+    save: bool = True,
+    project: Optional[str] = None,
+) -> str:
+    """按空间群 + 化学式用对称操作展开晶体（Wyckoff 级建模）。
+
+    与 build_structure 的区别：真正按 SpaceGroup 生成多原子晶胞，
+    而非仅校验编号。适用于岩盐/萤石/钙钛矿等常见原型之外的对称建模。
+
+    Args:
+        composition: 化学式，如 "NaCl"、"TiO2"。
+        spacegroup: 空间群编号 1–230。
+        lattice_parameters: 可选 "a,b,c,alpha,beta,gamma"；缺省按原子体积估算。
+        save/project: 落盘控制。
+
+    Returns:
+        摘要 + POSCAR；失败返回"错误："。
+    """
+    try:
+        comp = Composition(composition).reduced_composition
+    except Exception as e:  # noqa: BLE001
+        return f"错误：[E_PARSE] 无法解析化学式 '{composition}'（{e}）"
+    els = _elements_of(comp)
+    if not els:
+        return "错误：[E_PARAM] 化学式不含元素"
+
+    if lattice_parameters:
+        vals = [float(x) for x in lattice_parameters.replace(" ", "").split(",")]
+        if len(vals) != 6:
+            return "错误：[E_PARAM] lattice_parameters 需 6 个数值"
+        lattice = Lattice.from_parameters(*vals)
+    else:
+        lattice = _estimate_lattice(comp)
+
+    # 常见原型的高对称位点（0,0,0）起；多元素时在等价位点上铺开
+    # Structure.from_spacegroup 需要 (specie, coords) 列表
+    try:
+        sg = SpaceGroup.from_int_number(int(spacegroup))
+    except Exception as e:  # noqa: BLE001
+        return f"错误：[E_PARAM] 空间群 {spacegroup} 不合法（{e}）"
+
+    # 为每个元素分配一个初始分数坐标（沿体对角线），由对称操作展开
+    coords = []
+    n_el = len(els)
+    for i, sym in enumerate(els):
+        t = 0.0 if n_el == 1 else i * 0.5 / max(n_el - 1, 1)
+        coords.append([t, t, t])
+    try:
+        st = Structure.from_spacegroup(int(spacegroup), lattice, els, coords)
+    except Exception as e:  # noqa: BLE001
+        return (
+            f"错误：[E_PARSE] 空间群 {spacegroup}({sg.symbol}) 与组成 "
+            f"{comp.reduced_formula} 无法自动展开（{e}）；"
+            "请改用 prototype 建模或提供 CIF/POSCAR"
+        )
+
+    poscar_str = _to_vasp5_poscar(st)
+    save_note = ""
+    if save:
+        fpath = os.path.join(
+            _out_dir(project, "structure"),
+            f"{comp.reduced_formula}_sg{spacegroup}_{int(time.time())}.vasp",
+        )
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(poscar_str)
+        save_note = f"\n已保存: {fpath}"
+    return (
+        f"空间群: {spacegroup}（{sg.symbol}）\n"
+        f"## 结构摘要\n{_structure_summary(st)}\n"
+        f"## POSCAR\n```\n{poscar_str}\n```{save_note}"
+    )
+
+
+def edit_structure(
+    poscar_text: str,
+    op: str,
+    site_index: Optional[int] = None,
+    element_from: Optional[str] = None,
+    element_to: Optional[str] = None,
+    element: Optional[str] = None,
+    frac_coords: Optional[str] = None,
+    cart_coords: Optional[str] = None,
+    scale: Optional[float] = None,
+    save: bool = True,
+    project: Optional[str] = None,
+) -> str:
+    """结构编辑：代位 / 空位 / 间隙插入 / 等比缩放（ASE 缺陷工程常用操作）。
+
+    Args:
+        poscar_text: 输入 POSCAR。
+        op: substitute | vacancy | insert | scale。
+        site_index: 0 起始的位点下标（substitute/vacancy）。
+        element_from / element_to: 代位时源/目标元素；site_index 省略则替换全部 from。
+        element: insert 时插入的元素。
+        frac_coords / cart_coords: insert 坐标，格式 "x,y,z"（二选一）。
+        scale: op=scale 时的晶格缩放因子（体积变为 factor³）。
+        save/project: 落盘。
+
+    Returns:
+        新 POSCAR + 摘要；失败"错误："。
+    """
+    st, err = _parse_any_structure(poscar_text, "poscar")
+    if st is None:
+        return err
+    op_n = (op or "").strip().lower()
+    note = ""
+    try:
+        if op_n == "substitute":
+            if not element_to:
+                return "错误：[E_PARAM] substitute 需要 element_to"
+            if site_index is not None:
+                idx = int(site_index)
+                if not 0 <= idx < len(st):
+                    return f"错误：[E_PARAM] site_index={idx} 越界（0..{len(st)-1}）"
+                old = st[idx].specie.symbol
+                if element_from and old != element_from:
+                    return f"错误：[E_PARAM] site {idx} 是 {old}，不是 {element_from}"
+                st.replace(idx, element_to)
+                note = f"代位 site {idx}: {old} → {element_to}"
+            else:
+                if not element_from:
+                    return "错误：[E_PARAM] 无 site_index 时需要 element_from"
+                n = 0
+                for i in range(len(st) - 1, -1, -1):
+                    if st[i].specie.symbol == element_from:
+                        st.replace(i, element_to)
+                        n += 1
+                if n == 0:
+                    return f"错误：[E_PARAM] 结构中无元素 {element_from}"
+                note = f"批量代位 {element_from}→{element_to}：{n} 个位点"
+        elif op_n == "vacancy":
+            if site_index is None:
+                return "错误：[E_PARAM] vacancy 需要 site_index"
+            idx = int(site_index)
+            if not 0 <= idx < len(st):
+                return f"错误：[E_PARAM] site_index={idx} 越界（0..{len(st)-1}）"
+            old = st[idx].specie.symbol
+            st.remove_sites([idx])
+            note = f"空位: 移除 site {idx}（{old}）；剩余 {len(st)} 原子"
+        elif op_n == "insert":
+            if not element:
+                return "错误：[E_PARAM] insert 需要 element"
+            if frac_coords:
+                xyz = [float(x) for x in frac_coords.replace(" ", "").split(",")]
+                st.append(element, xyz, coords_are_cartesian=False)
+                note = f"插入 {element} @ frac {xyz}"
+            elif cart_coords:
+                xyz = [float(x) for x in cart_coords.replace(" ", "").split(",")]
+                st.append(element, xyz, coords_are_cartesian=True)
+                note = f"插入 {element} @ cart {xyz} Å"
+            else:
+                return "错误：[E_PARAM] insert 需要 frac_coords 或 cart_coords"
+        elif op_n == "scale":
+            if scale is None:
+                return "错误：[E_PARAM] scale 需要 scale 因子"
+            f = float(scale)
+            if f <= 0:
+                return "错误：[E_PARAM] scale 必须 > 0"
+            st.scale_lattice(st.volume * (f ** 3))
+            note = f"晶格等比缩放 ×{f}（体积 ×{f**3:.4f}）"
+        else:
+            return "错误：[E_PARAM] op 仅支持 substitute|vacancy|insert|scale"
+    except (ValueError, IndexError, KeyError) as e:
+        return f"错误：[E_PARAM] 编辑失败（{e}）"
+    except Exception as e:  # noqa: BLE001
+        return f"错误：[E_PARSE] 编辑失败（{type(e).__name__}: {e}）"
+
+    poscar_str = _to_vasp5_poscar(st)
+    save_note = ""
+    if save:
+        fpath = os.path.join(
+            _out_dir(project, "structure"),
+            f"edit_{op_n}_{int(time.time())}.vasp",
+        )
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(poscar_str)
+        save_note = f"\n已保存: {fpath}"
+    return (
+        f"{note}\n## 结构摘要\n{_structure_summary(st)}\n"
+        f"## POSCAR\n```\n{poscar_str}\n```{save_note}"
+    )
+
+
+def primitive_cell(
+    poscar_text: str,
+    save: bool = True,
+    project: Optional[str] = None,
+) -> str:
+    """约化为对称性意义下的原胞（SpacegroupAnalyzer primitive）。
+
+    Args:
+        poscar_text: POSCAR 文本。
+        save/project: 落盘。
+
+    Returns:
+        原胞 POSCAR + 前后原子数；失败"错误："。
+    """
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+    st, err = _parse_any_structure(poscar_text, "poscar")
+    if st is None:
+        return err
+    try:
+        sga = SpacegroupAnalyzer(st, symprec=0.1)
+        prim = sga.get_primitive_standard_structure()
+    except Exception as e:  # noqa: BLE001
+        return f"错误：[E_PARSE] 原胞约化失败（{e}）"
+    poscar_str = _to_vasp5_poscar(prim)
+    save_note = ""
+    if save:
+        fpath = os.path.join(_out_dir(project, "structure"), f"primitive_{int(time.time())}.vasp")
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(poscar_str)
+        save_note = f"\n已保存: {fpath}"
+    return (
+        f"原胞约化: {len(st)} → {len(prim)} 原子\n"
+        f"空间群: {sga.get_space_group_symbol()} ({sga.get_space_group_number()})\n"
+        f"## 结构摘要\n{_structure_summary(prim)}\n"
+        f"## POSCAR\n```\n{poscar_str}\n```{save_note}"
+    )
+
+
+def symmetry_report(poscar_text: str, symprec: float = 0.1) -> str:
+    """对称性报告：空间群、点群、是否原胞、Wyckoff 等（只读，不改结构）。"""
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+    st, err = _parse_any_structure(poscar_text, "poscar")
+    if st is None:
+        return err
+    try:
+        sga = SpacegroupAnalyzer(st, symprec=float(symprec))
+        sg_num = sga.get_space_group_symbol()
+        sg_int = sga.get_space_group_number()
+        crystal = sga.get_crystal_system()
+        lattice_type = sga.get_lattice_type()
+        point = sga.get_point_group_symbol()
+        prim = sga.get_primitive_standard_structure()
+        conv = sga.get_conventional_standard_structure()
+    except Exception as e:  # noqa: BLE001
+        return f"错误：[E_PARSE] 对称性分析失败（{e}）"
+    return "\n".join([
+        f"## 对称性报告（symprec={symprec}）",
+        f"组成: {st.composition.reduced_formula} | 原子数 {len(st)}",
+        f"空间群: {sg_num} (#{sg_int})",
+        f"晶系: {crystal} | 点阵: {lattice_type} | 点群: {point}",
+        f"原胞原子数: {len(prim)} | 常规胞原子数: {len(conv)}",
+        f"体积: {st.volume:.4f} Å³",
+    ])
+
+
+def _find_ase_cli() -> Optional[str]:
+    """定位 ASE 命令行（优先 PATH，其次 venv/系统 Scripts）。"""
+    import shutil
+    import sys
+
+    for name in ("ase", "ase.exe", "ase-gui", "ase-gui.exe"):
+        p = shutil.which(name)
+        if p:
+            return p
+    scripts = os.path.join(os.path.dirname(sys.executable), "Scripts")
+    for name in ("ase.exe", "ase", "ase-gui.exe"):
+        p = os.path.join(scripts, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def view_structure_ase(
+    poscar_text: Optional[str] = None,
+    structure_path: Optional[str] = None,
+    project: Optional[str] = None,
+) -> str:
+    """用本机 ASE GUI（ase-gui）打开结构做 3D 查看（需图形环境）。
+
+    Args:
+        poscar_text: POSCAR 文本（与 structure_path 二选一）。
+        structure_path: 已有结构文件路径（.vasp/.cif/POSCAR 等）。
+        project: 存放预览副本的项目名（默认 outputs/ase_preview）。
+
+    Returns:
+        打开的文件路径与进程说明；失败返回"错误："（无 DISPLAY/未装 ase 时）。
+    """
+    import subprocess
+
+    ase_bin = _find_ase_cli()
+    if not ase_bin:
+        return (
+            "错误：[E_PARAM] 未找到 ASE 命令行（ase/ase-gui）。"
+            "请确认已 pip install ase，且 Scripts 目录在 PATH 中"
+        )
+
+    preview_dir = _out_dir(project or "ase_preview", "structure")
+    if structure_path:
+        src = os.path.expanduser(str(structure_path))
+        if not os.path.isfile(src):
+            return f"错误：[E_PARAM] structure_path 不存在: {src}"
+        target = src
+    elif poscar_text:
+        st, err = _parse_any_structure(poscar_text, "auto")
+        if st is None:
+            return err
+        target = os.path.join(preview_dir, f"ase_view_{int(time.time())}.vasp")
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(_to_vasp5_poscar(st))
+    else:
+        return "错误：[E_PARAM] 需要 poscar_text 或 structure_path"
+
+    # ase gui 子命令；无 shell，独立进程，不阻塞 MCP stdio
+    try:
+        proc = subprocess.Popen(
+            [ase_bin, "gui", target],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            cwd=os.path.dirname(os.path.abspath(target)) or None,
+        )
+    except OSError as e:
+        return f"错误：[E_PARAM] 启动 ASE GUI 失败（{e}）"
+
+    # 立刻失败（例如无显示）时读 stderr
+    try:
+        proc.wait(timeout=1.5)
+        err = (proc.stderr.read() if proc.stderr else b"")[:400].decode("utf-8", "replace")
+        if proc.returncode not in (0, None):
+            return (
+                f"错误：[E_PARAM] ASE GUI 立即退出（code={proc.returncode}）。"
+                f"文件已保存: {target}。{err}"
+            )
+    except subprocess.TimeoutExpired:
+        pass  # 仍在运行 = 窗口已打开
+
+    return (
+        f"已请求 ASE GUI 打开: {target}\n"
+        f"命令: {ase_bin} gui <file>\n"
+        "提示: 远程/无头会话无法弹出窗口；可手动在本机执行同命令。"
+    )
+
+
+TOOLS = [
+    build_structure,
+    parse_poscar,
+    make_supercell,
+    cleave_surface,
+    import_structure,
+    build_from_spacegroup,
+    edit_structure,
+    primitive_cell,
+    symmetry_report,
+    view_structure_ase,
+]
+
+

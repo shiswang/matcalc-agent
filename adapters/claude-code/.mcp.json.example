@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "matcalc": {
+      "command": "REPLACE_WITH_ABS_PATH/.venv/Scripts/python.exe",
+      "args": ["-m", "server.main"],
+      "cwd": "REPLACE_WITH_ABS_PATH/matcalc-agent"
+    }
+  }
+}

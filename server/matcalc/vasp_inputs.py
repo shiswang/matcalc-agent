@@ -697,3 +697,129 @@ def generate_bader_inputs(poscar_text: str, encut: Optional[int] = None, project
         "4. 下载 ACF.dat 后调用 parse_bader_acf 解析各原子电荷"
     )
     return saved + flow
+
+
+def generate_aimd_inputs(
+    poscar_text: str,
+    temperature: float = 300.0,
+    nsw: int = 5000,
+    potim: float = 1.0,
+    encut: Optional[int] = None,
+    tebeg: Optional[float] = None,
+    teend: Optional[float] = None,
+    nblock: int = 1,
+    smass: float = 0.0,
+    ispin: Optional[int] = None,
+    magmom: Optional[str] = None,
+    ldau_u: Optional[str] = None,
+    ldau_l: Optional[str] = None,
+    project: Optional[str] = None,
+    save: bool = True,
+) -> str:
+    """【MCP 工具】生成从头算分子动力学（AIMD）VASP 输入集。
+
+    对齐常见 NVT AIMD 设定：IBRION=0 / MDALGO=2(Nose-Hoover) / TEBEG=TEEND。
+    适合层状氧化物（如 O3-NaMnO2）短时热涨落与离子扩散初筛；生产级长轨迹
+    建议更小 POTIM、更高 ENCUT 与超胞。
+
+    Args:
+        poscar_text: POSCAR（建议已弛豫的 CONTCAR，且足够大）。
+        temperature: 目标温度 K（同时作为 TEBEG/TEEND，除非覆盖）。
+        nsw: MD 步数（总时长 ≈ nsw × potim fs）。
+        potim: 时间步长 fs（氧化物常用 0.5–1.0；含 H 则 ≤0.5）。
+        encut: 截断能 eV；缺省 520。
+        tebeg / teend: 起始/终止温度；缺省均为 temperature（恒温）。
+        nblock: 每 nblock 步写一次 OSZICAR/轨迹信息。
+        smass: Nose 质量参数（-1 初始；0/正数见 VASP 手册；缺省 0）。
+        ispin / magmom: 自旋与初始磁矩（格式同 generate_vasp_inputs）。
+        ldau_u / ldau_l: +U 参数（如 "Mn=4.0"），层状氧化物常用。
+        project / save: 落盘控制。
+
+    Returns:
+        INCAR/KPOINTS/POSCAR 说明 + 使用提示；失败"错误："。
+    """
+    try:
+        struct = Poscar.from_str(poscar_text).structure
+    except Exception as e:  # noqa: BLE001
+        return f"错误：[E_PARSE] POSCAR 解析失败（{e}）"
+    comp = struct.composition
+    els = [el.symbol for el in comp.elements]
+    if len(struct) < 8:
+        note_small = "⚠ 单胞过小，AIMD 易出现有限尺寸伪影；建议先 make_supercell ≥ 2×2×2\n"
+    else:
+        note_small = ""
+
+    t0 = float(tebeg if tebeg is not None else temperature)
+    t1 = float(teend if teend is not None else temperature)
+    encut_v = int(encut or 520)
+    nsw = int(nsw)
+    potim = float(potim)
+    if nsw <= 0:
+        return "错误：[E_PARAM] nsw 需为正整数"
+    if not 0.1 <= potim <= 5.0:
+        return "错误：[E_PARAM] potim 建议 0.1–5.0 fs"
+    if not 100 <= t0 <= 5000:
+        return "错误：[E_PARAM] tebeg 温度异常"
+
+    # +U / magmom 复用 vasp_inputs 的展开逻辑（简化：直接写行）
+    extra = []
+    if ldau_u:
+        extra.append(f"LDAUU = {ldau_u}")
+        extra.append("LDAUTYPE = 2")
+        extra.append("LDAUJ = 0")
+        extra.append("LMAXMIX = 4")
+        if ldau_l:
+            extra.append(f"LDAUL = {ldau_l}")
+    mag_line = ""
+    if magmom:
+        mag_line = f"MAGMOM = {magmom}"
+        extra.append(mag_line)
+        if ispin is None:
+            ispin = 2
+    if ispin:
+        extra.append(f"ISPIN = {ispin}")
+
+    incar_lines = [
+        "### AIMD NVT (MatCalcAgent) ###",
+        f"SYSTEM = {comp.reduced_formula} aimd",
+        f"ENCUT = {encut_v}",
+        "PREC = Accurate",
+        "EDIFF = 1E-5          # 电子步收敛（AIMD 可适当放宽）",
+        "IBRION = 0            # 分子动力学",
+        f"NSW = {nsw}",
+        f"POTIM = {potim}",
+        "MDALGO = 2            # Nose-Hoover 恒温",
+        f"TEBEG = {t0}",
+        f"TEEND = {t1}",
+        f"NBLOCK = {nblock}",
+        f"SMASS = {smass}",
+        "ISYM = 0              # MD 中关闭对称性",
+        "LWAVE = .FALSE.",
+        "LCHARG = .FALSE.",
+        "ISMEAR = 0",
+        "SIGMA = 0.05",
+    ] + extra + [""]
+
+    # AIMD 通常用 Gamma 点或稀疏网格（大超胞）
+    n_at = len(struct)
+    if n_at >= 24:
+        kpts = "K-Points\n0\nGamma\n1 1 1\n0 0 0\n"
+        k_note = "大体系 Gamma 点（按需加密）"
+    else:
+        kpts = "K-Points\n0\nGamma\n2 2 2\n0 0 0\n"
+        k_note = "小体系 2×2×2 Gamma 网格"
+
+    files = {
+        "POSCAR": _to_vasp5_poscar(struct),
+        "INCAR": "\n".join(incar_lines),
+        "KPOINTS": kpts,
+    }
+    saved = _save_input_set("aimd_inputs", files, project=project) if save else "（未落盘）"
+    total_ps = nsw * potim / 1000.0
+    tips = (
+        f"\n\n总时长 ≈ {total_ps:.2f} ps（NSW={nsw} × POTIM={potim} fs）；"
+        f"恒温 {t0:g}–{t1:g} K；{k_note}。\n"
+        "运行后用 monitor_aimd(outcar, oscar, target_steps=NSW, target_temp=T) 监控。\n"
+        "提示：AIMD 机时高，先短轨迹（~1 ps）试跑；扩散系数需更长轨迹与 MSD 分析。"
+    )
+    return note_small + saved + tips

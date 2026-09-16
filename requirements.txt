@@ -6,3 +6,6 @@ ase>=3.24
 matplotlib>=3.8
 numpy>=1.26
 pytest>=8.0
+# Materials Project 客户端（fetch_mp_structure / 相图 / Pourbaix；可选但推荐）
+# Pourbaix 离子数据需要 contribs extra
+mp-api[contribs]>=0.40

@@ -24,6 +24,9 @@ clusters.json
 CLUSTERS.md
 remote_workdir_notes.md
 
-# ÏÖ³¡ÁÙÊ±½Å±¾£¨ÎðÈë¿â£©
+# ï¿½Ö³ï¿½ï¿½ï¿½Ê±ï¿½Å±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½â£©
 server/_tmp_*.py
 *_tmp_*.py
+
+# Filled private handoff (template is committed)
+adapters/HANDOFF_PRIVATE.md

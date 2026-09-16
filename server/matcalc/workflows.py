@@ -62,6 +62,31 @@ WF_TEMPLATES: Dict[str, List[dict]] = {
         {"name": "summary_report", "type": "report"},
         {"name": "final_note", "type": "note"},
     ],
+    # Materials Project 风格：先弛豫再静态/DOS 电子结构（对标 MP relax→static）
+    "mp_relax_static": [
+        {"name": "relax", "type": "vasp_relax"},
+        {"name": "static_dos", "type": "vasp_static_dos"},
+        {"name": "extract", "type": "local_analysis"},
+        {"name": "mp_report", "type": "report"},
+        {"name": "mp_note", "type": "note"},
+    ],
+    # MP 完整电子结构：relax → static(SCF/CHGCAR) → band(NSCF) → DOS → 报告
+    "mp_relax_band": [
+        {"name": "relax", "type": "vasp_relax"},
+        {"name": "static", "type": "vasp_static"},
+        {"name": "bands", "type": "vasp_band"},
+        {"name": "dos", "type": "vasp_static_dos"},
+        {"name": "extract", "type": "local_analysis"},
+        {"name": "mp_electronic_report", "type": "report"},
+        {"name": "mp_electronic_note", "type": "note"},
+    ],
+    # AIMD 冒烟：弛豫 → AIMD 输入集 → 报告
+    "relax_aimd_short": [
+        {"name": "relax", "type": "vasp_relax"},
+        {"name": "aimd", "type": "vasp_aimd"},
+        {"name": "summary_report", "type": "report"},
+        {"name": "final_note", "type": "note"},
+    ],
 }
 
 
@@ -97,12 +122,73 @@ ISIF = 3
 NSW = 100
 """
 
+# MP/atomate2 风格弛豫（对齐 MP RelaxMaker 常见约定）
+_INCAR_RELAX_MP = """\
+# MP-style relax (atomate2 RelaxMaker 对齐)
+SYSTEM = mp_relax
+PREC = Accurate
+EDIFF = 1e-5
+EDIFFG = -0.02
+IBRION = 2
+ISIF = 3
+NSW = 99
+LREAL = Auto
+LWAVE = .FALSE.
+LCHARG = .FALSE.
+"""
+
+# 静态 SCF（MP StaticMaker：产出 CHGCAR 供后续 band/DOS）
+_INCAR_STATIC_MP = """\
+# MP-style static SCF (atomate2 StaticMaker)
+SYSTEM = mp_static
+PREC = Accurate
+EDIFF = 1e-6
+NSW = 0
+IBRION = -1
+ISMEAR = -5
+SIGMA = 0.05
+LREAL = .FALSE.
+LWAVE = .FALSE.
+LCHARG = .TRUE.
+"""
+
 # 最小静态 DOS INCAR 模板（手写）
 _INCAR_STATIC_DOS = """\
 # workflows MVP 最小静态DOS模板
 SYSTEM = static_dos
 NSW = 0
 LORBIT = 11
+"""
+
+# MP 风格 DOS（静态 + 轨道投影）
+_INCAR_STATIC_DOS_MP = """\
+# MP-style static+DOS
+SYSTEM = mp_static_dos
+PREC = Accurate
+EDIFF = 1e-6
+NSW = 0
+ISMEAR = -5
+SIGMA = 0.05
+LORBIT = 11
+NEDOS = 2001
+LWAVE = .FALSE.
+LCHARG = .TRUE.
+"""
+
+# 能带 NSCF（读 static 的 CHGCAR）
+_INCAR_BAND_MP = """\
+# MP-style band NSCF (atomate2 BandStructureMaker · ICHARG=11)
+SYSTEM = mp_band
+PREC = Accurate
+EDIFF = 1e-6
+NSW = 0
+IBRION = -1
+ICHARG = 11
+ISMEAR = 0
+SIGMA = 0.01
+LORBIT = 11
+LWAVE = .FALSE.
+LCHARG = .FALSE.
 """
 
 # Gamma 中心 K 点网格（占位密度，够 MVP 用）
@@ -432,7 +518,13 @@ def _step_local_calc(state: dict, step: dict) -> str:
     return f"[{step['name']}] 本地计算完成（演示）"
 
 
-def _vasp_prepare(state: dict, step: dict, incar_text: str, label: str) -> str:
+def _vasp_prepare(
+    state: dict,
+    step: dict,
+    incar_text: str,
+    label: str,
+    kpoints_text: Optional[str] = None,
+) -> str:
     """vasp 类步骤 pending 态：在步骤目录生成输入集，转入 waiting_submit。
 
     POSCAR 取舍：params._poscar_validated_text 存在（S5 结构注入）→ 用真实结构；
@@ -442,7 +534,8 @@ def _vasp_prepare(state: dict, step: dict, incar_text: str, label: str) -> str:
     os.makedirs(d, exist_ok=True)
     real_poscar = (state.get("params") or {}).get("_poscar_validated_text") or ""
     poscar_final = real_poscar or _PLACEHOLDER_POSCAR
-    for fname, text in (("INCAR", incar_text), ("KPOINTS", _KPOINTS_GAMMA),
+    kpts = kpoints_text or _KPOINTS_GAMMA
+    for fname, text in (("INCAR", incar_text), ("KPOINTS", kpts),
                         ("POSCAR", poscar_final)):
         with open(os.path.join(d, fname), "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
@@ -520,23 +613,93 @@ def _auto_submit_step(state: dict, step: dict, step_dir: str) -> str:
             f"(ppn={params.get('ppn', 8)})；后续 advance 将幂等等待结果")
 
 
-def _vasp_flow(state: dict, step: dict, incar_text: str, label: str) -> str:
+def _vasp_flow(
+    state: dict,
+    step: dict,
+    incar_text: str,
+    label: str,
+    kpoints_text: Optional[str] = None,
+) -> str:
     """vasp 类步骤统一流转：pending → 备输入；waiting_submit → 查产物。"""
     if step["status"] == "pending":
-        return _vasp_prepare(state, step, incar_text, label)
+        return _vasp_prepare(state, step, incar_text, label, kpoints_text=kpoints_text)
     if step["status"] == "waiting_submit":
         return _vasp_settle(state, step)
     return f"[{step['name']}] 状态 {step['status']} 无需处理"
 
 
+def _is_mp_template(state: dict) -> bool:
+    return str(state.get("template") or "").startswith("mp_")
+
+
+def _band_kpoints_from_poscar(poscar_text: str, line_density: int = 20) -> str:
+    """从 POSCAR 生成高对称 line-mode KPOINTS；失败则回退 Gamma 网格。"""
+    try:
+        from pymatgen.io.vasp.inputs import Kpoints
+        from pymatgen.io.vasp import Poscar
+        from pymatgen.symmetry.bandstructure import HighSymmKpath
+
+        st = Poscar.from_str(poscar_text).structure
+        kpath = HighSymmKpath(st)
+        kpts = Kpoints.automatic_linemode(line_density, kpath)
+        return kpts.get_str()
+    except Exception:  # noqa: BLE001
+        return _KPOINTS_GAMMA
+
+
 def _step_vasp_relax(state: dict, step: dict) -> str:
-    """vasp_relax：结构弛豫（IBRION=2 / ISIF=3 / NSW=100），人工提交+回填 OUTCAR。"""
-    return _vasp_flow(state, step, _INCAR_RELAX, "弛豫")
+    """vasp_relax：结构弛豫；mp_* 模板用 MP-style INCAR。"""
+    incar = _INCAR_RELAX_MP if _is_mp_template(state) else _INCAR_RELAX
+    label = "MP弛豫" if _is_mp_template(state) else "弛豫"
+    return _vasp_flow(state, step, incar, label)
+
+
+def _step_vasp_static(state: dict, step: dict) -> str:
+    """vasp_static：静态 SCF（NSW=0，LCHARG=.TRUE.，对标 MP StaticMaker）。"""
+    return _vasp_flow(state, step, _INCAR_STATIC_MP, "MP静态SCF")
+
+
+def _step_vasp_band(state: dict, step: dict) -> str:
+    """vasp_band：能带 NSCF（ICHARG=11 + 高对称路径 KPOINTS）。"""
+    if step["status"] == "pending":
+        d = _step_dir(state["wf_id"], state["project"], _step_index(state, step), step["name"])
+        real_poscar = (state.get("params") or {}).get("_poscar_validated_text") or ""
+        poscar_final = real_poscar or _PLACEHOLDER_POSCAR
+        kpts = _band_kpoints_from_poscar(poscar_final)
+        return _vasp_prepare(state, step, _INCAR_BAND_MP, "MP能带NSCF", kpoints_text=kpts)
+    return _vasp_flow(state, step, _INCAR_BAND_MP, "MP能带NSCF")
 
 
 def _step_vasp_static_dos(state: dict, step: dict) -> str:
-    """vasp_static_dos：静态自洽 + DOS(NSW=0 / LORBIT=11)，人工提交+回填 OUTCAR。"""
-    return _vasp_flow(state, step, _INCAR_STATIC_DOS, "静态DOS")
+    """vasp_static_dos：静态自洽 + DOS；mp_* 模板用 MP-style INCAR。"""
+    incar = _INCAR_STATIC_DOS_MP if _is_mp_template(state) else _INCAR_STATIC_DOS
+    label = "MP静态DOS" if _is_mp_template(state) else "静态DOS"
+    return _vasp_flow(state, step, incar, label)
+
+
+_INCAR_AIMD = """\
+### AIMD NVT (workflow relax_aimd_short) ###
+SYSTEM = aimd
+ENCUT = 520
+PREC = Accurate
+EDIFF = 1E-5
+IBRION = 0
+NSW = 2000
+POTIM = 1.0
+MDALGO = 2
+TEBEG = 300
+TEEND = 300
+ISYM = 0
+LWAVE = .FALSE.
+LCHARG = .FALSE.
+ISMEAR = 0
+SIGMA = 0.05
+"""
+
+
+def _step_vasp_aimd(state: dict, step: dict) -> str:
+    """vasp_aimd：生成 AIMD 输入集（IBRION=0）；OUTCAR 结算同其它 vasp 步。"""
+    return _vasp_flow(state, step, _INCAR_AIMD, "AIMD")
 
 
 def _step_report(state: dict, step: dict) -> str:
@@ -690,7 +853,10 @@ def _step_local_analysis(state: dict, step: dict) -> str:
 _STEP_HANDLERS: Dict[str, Callable[[dict, dict], str]] = {
     "local_calc": _step_local_calc,
     "vasp_relax": _step_vasp_relax,
+    "vasp_static": _step_vasp_static,
+    "vasp_band": _step_vasp_band,
     "vasp_static_dos": _step_vasp_static_dos,
+    "vasp_aimd": _step_vasp_aimd,
     "local_analysis": _step_local_analysis,
     "report": _step_report,
     "note": _step_note,
@@ -992,5 +1158,5 @@ def workflow_status(wf_id: str, project: str) -> str:
 
 
 # 面向 main.py 注册 MCP 工具的导出清单
-# list_active_workflows 是内部恢复/路由原语，不新增 MCP 工具，保持 49 工具契约。
+# list_active_workflows 是内部恢复/路由原语，不新增 MCP 工具，保持 62 工具契约。
 TOOLS = [start_workflow, advance_workflow, workflow_status]

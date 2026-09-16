@@ -60,7 +60,47 @@ def test_auto_submit_happy_path_and_idempotent(nmo_wf, monkeypatch):
     assert len(calls) == 1
 
 
-def test_auto_submit_off_keeps_manual_semantics(nmo_wf):
+def test_auto_submit_off_keeps_manual_semantic(nmo_wf):
     wf_id, proj = nmo_wf
     out = wf.advance_workflow(wf_id, proj)               # 不开开关
     assert "继续等待人工提交" in out
+
+
+def test_mp_relax_band_auto_submit_with_injected_poscar(clean_test_project, monkeypatch):
+    """MP 模板 + 真实 POSCAR 注入 + auto_submit：relax 步应走 submit_only。"""
+    from pymatgen.core import Lattice, Structure
+
+    from server.matcalc.structures import _to_vasp5_poscar
+
+    st = Structure.from_spacegroup(
+        "Fm-3m", Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+    )
+    poscar = _to_vasp5_poscar(st)
+    out = wf.start_workflow(
+        "mp_relax_band",
+        project=clean_test_project,
+        params_json=json.dumps({
+            "poscar_text": poscar,
+            "auto_submit": True,
+            "node": "master",
+            "ppn": 8,
+        }),
+    )
+    assert "工作流 ID:" in out
+    wf_id = out.split("工作流 ID:")[1].split()[0].strip()
+    calls = []
+
+    def fake_submit(project, local_dir, node="master", ppn=8,
+                    job_name=None, potcar_elements=None):
+        calls.append((project, job_name, potcar_elements, node))
+        return True, "7777.master"
+
+    monkeypatch.setattr(jobs_mod, "submit_only", fake_submit)
+    adv = wf.advance_workflow(wf_id, clean_test_project)
+    assert "已自动提交: 7777.master" in adv
+    assert len(calls) == 1
+    assert "relax" in calls[0][1]
+    # MP INCAR 应出现在步骤目录
+    d = _step_dir(clean_test_project, wf_id)
+    incar = open(os.path.join(d, "INCAR"), encoding="utf-8").read()
+    assert "EDIFFG" in incar or "mp_relax" in incar

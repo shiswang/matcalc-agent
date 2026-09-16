@@ -1,20 +1,23 @@
 """MCP 注册表完整性 —— 拆包重构的契约测试。
 
-42 个工具名一个不能少、不能多、docstring 描述非空。
-（2026-08-26 用户指令移除结构可视化 30->29；S3 集成五模块后 29->42）
-R2/R3/集成 每阶段完成后此测试必须保持全绿。
+工具数一个不能少、不能多、docstring 描述非空。
+（2026-08-26 可视化移除 30→29；S3 后 42；S4 后 48→49；S8 建模栈一期 49→54）
 """
 import asyncio
 
 import server.main as mc
 
 EXPECTED_TOOLS = {
-    # 建模与结构
+    # 建模与结构（含 S8）
     "build_structure", "parse_poscar", "make_supercell", "cleave_surface",
+    "import_structure", "build_from_spacegroup", "edit_structure",
+    "primitive_cell", "symmetry_report", "view_structure_ase",
+    "fetch_mp_structure", "mp_workflow_guide",
+    "mp_phase_diagram", "mp_reaction_energy", "mp_interface_reactions", "mp_pourbaix_diagram",
     # 输入生成
     "generate_vasp_inputs", "generate_band_inputs", "generate_dos_inputs",
     "generate_optical_inputs", "generate_elastic_inputs", "generate_eos_inputs",
-    "generate_bader_inputs", "generate_sbatch",
+    "generate_bader_inputs", "generate_sbatch", "generate_aimd_inputs",
     # 解析与诊断
     "parse_vasp_output", "analyze_vasprun", "diagnose_vasp_error", "parse_bader_acf",
     # 绘图与分析
@@ -54,7 +57,7 @@ def test_registry_exact_tool_set():
     extra = names - EXPECTED_TOOLS
     assert not missing, f"缺少工具: {sorted(missing)}"
     assert not extra, f"多出工具: {sorted(extra)}"
-    assert len(names) == 49
+    assert len(names) == 62
 
 
 def test_tools_have_descriptions():

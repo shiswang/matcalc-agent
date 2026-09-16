@@ -241,3 +241,18 @@ def test_bader_inputs_executes(nacl_poscar_text):
         assert incars and "LAECHG" in incars[0].read_text(encoding="utf-8")
     finally:
         _cleanup_gen_project()
+
+
+def test_aimd_inputs_executes(nacl_poscar_text):
+    try:
+        out = mc.generate_aimd_inputs(
+            nacl_poscar_text, temperature=300, nsw=100, potim=1.0,
+            project=_GEN_PROJECT, ldau_u=None,
+        )
+        assert not out.startswith("错误"), out[:300]
+        incars = list(_gen_inputs_root().rglob("INCAR"))
+        assert incars
+        text = incars[0].read_text(encoding="utf-8")
+        assert "IBRION = 0" in text and "MDALGO" in text and "TEBEG" in text
+    finally:
+        _cleanup_gen_project()
