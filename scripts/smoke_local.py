@@ -2,12 +2,24 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 冒烟同样算"测试"：写盘重定向到临时沙箱，别在 server/outputs/ 留下 NaCl_relax_<ts>/ 残渣。
+# 必须在 import server.main 之前设好（各模块在导入时读取 OUTPUTS_DIR）。
+_SANDBOX = os.path.join(tempfile.gettempdir(), "matcalc_smoke_outputs")
+shutil.rmtree(_SANDBOX, ignore_errors=True)
+os.makedirs(_SANDBOX, exist_ok=True)
+os.environ.setdefault("MATCALC_OUTPUTS_DIR", _SANDBOX)
+atexit.register(shutil.rmtree, _SANDBOX, ignore_errors=True)
 
 
 def main() -> int:

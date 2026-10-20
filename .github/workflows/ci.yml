@@ -24,9 +24,17 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # 依赖可导入性自检：解析错版本时在这里就红，别等到 conftest 里报晦涩的 ImportError
+          python -c "import importlib.metadata as m; print('mcp', m.version('mcp'))"
+          python -c "from mcp.server.fastmcp import FastMCP; print('FastMCP OK')"
+
+      - name: 静态检查（ruff：E9 语法错 + pyflakes）
+        run: |
+          python -m pip install -r requirements-dev.txt
+          ruff check .
 
       - name: 引导测试用集群配置（clusters.json 不入库的既定红线）
         run: cp clusters.example.json clusters.json
 
-      - name: 全量回归（163+ 测试，含 registry 49 工具契约锁）
+      - name: 全量回归（registry 62 工具契约锁 + campaign 脚本守卫）
         run: pytest tests/ -q --basetemp=.pytest_tmp_ci

@@ -94,11 +94,37 @@ def test_primitive_and_symmetry(clean_proj):
     assert "225" in rep or "Fm-3m" in rep
 
 
-def test_view_structure_ase_or_clean_error(clean_proj):
-    """无显示环境允许报错，但必须保存结构并给出明确错误；有 GUI 则应启动。"""
+class _FakeAseProc:
+    """假 ASE 进程：走"已启动"分支，但绝不真弹窗口。"""
+
+    returncode = 0
+    stderr = None
+
+    def wait(self, timeout=None):
+        return 0
+
+
+def test_view_structure_ase_success_without_gui(clean_proj, monkeypatch):
+    """成功分支零副作用：替换 ase 二进制与 Popen，测试期间不启动真实 GUI。
+
+    直接调真函数时，每次跑回归都会弹一个 ase gui 窗口且无人关闭（本机实测：
+    `D:\python\Scripts\ase.EXE` 在 PATH 上，`_find_ase_cli()` 必命中）。
+    """
+    import subprocess as _sp
+
+    monkeypatch.setattr(mc_st, "_find_ase_cli", lambda: r"C:\fake\ase.exe")
+    monkeypatch.setattr(_sp, "Popen", lambda *args, **kwargs: _FakeAseProc())
+
     out = mc_st.view_structure_ase(poscar_text=_nacl_poscar(), project=PROJ)
     assert isinstance(out, str) and out
-    if out.startswith("错误"):
-        assert "ASE" in out
-    else:
-        assert "ASE GUI" in out or "ase" in out.lower()
+    assert not out.startswith("错误"), out
+    assert "已请求 ASE GUI 打开" in out
+    # 预览副本必须真的写盘
+    assert list((Path(OUTPUTS_DIR) / PROJ).rglob("ase_view_*.vasp"))
+
+
+def test_view_structure_ase_clean_error_when_ase_missing(clean_proj, monkeypatch):
+    """没装 ASE 时必须返回"错误："并点名 ASE，不能抛异常。"""
+    monkeypatch.setattr(mc_st, "_find_ase_cli", lambda: None)
+    out = mc_st.view_structure_ase(poscar_text=_nacl_poscar(), project=PROJ)
+    assert out.startswith("错误") and "ASE" in out

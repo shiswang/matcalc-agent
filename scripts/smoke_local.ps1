@@ -21,6 +21,10 @@ if ($LASTEXITCODE -ne 0) { throw "smoke_local.py failed" }
 Write-Host "== pytest sample ==" -ForegroundColor Cyan
 & $py -m pytest tests/test_registry.py tests/test_structures.py -q --basetemp=.pytest_tmp_smoke
 if ($LASTEXITCODE -ne 0) { throw "pytest sample failed" }
+# basetemp 留在仓库根会积灰：验收通过就地清掉（Windows 下 pytest 临时目录常有 ACL 冲突）
+Remove-Item -Recurse -Force (Join-Path $root ".pytest_tmp_smoke") -ErrorAction SilentlyContinue
+# basetemp 留在仓库根会积灰：验收通过就地清掉（Windows 下 pytest 临时目录常有 ACL 冲突）
+Remove-Item -Recurse -Force (Join-Path $root ".pytest_tmp_smoke") -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "SMOKE PASS - see MCP.md for client config" -ForegroundColor Green

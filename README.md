@@ -28,6 +28,13 @@ REM 3) 离线验收（不连集群、不装 DSH）
 powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1
 REM   期望：SMOKE PASS 且 tool_count=62
 
+REM 3b) 静态检查（可选；CI 里会跑）
+.venv\Scripts\pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m ruff check .
+
+REM 3c) 快速回路（跳过两个 ZSL 界面慢用例，约 22 s）
+.venv\Scripts\python.exe -m pytest tests -q -m "not slow" --basetemp=.pytest_tmp
+
 REM 4) 接入你的 Agent（MCP stdio）
 scripts\run_mcp.bat
 REM   客户端配置片段见 MCP.md

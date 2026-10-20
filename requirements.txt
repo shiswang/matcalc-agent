@@ -1,5 +1,6 @@
 # MatCalcAgent 运行依赖（CI 与本地一致；版本下限按实测兼容窗口）
-fastmcp>=2.0
+# MCP SDK 固定 1.x：代码用 mcp.server.fastmcp.FastMCP，2.x 已改名 MCPServer，升级会直接起不来
+mcp>=1.29,<2
 pymatgen>=2025.0
 pymatgen-analysis-diffusion>=2025.11.15
 ase>=3.24

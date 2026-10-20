@@ -71,7 +71,9 @@ def test_reconcile_observe_only_does_not_mutate(isolated_events):
 
 
 def test_start_workflow_emits_outbox(tmp_path, monkeypatch, isolated_events):
-    # 使用真实 start（smoke 链）但 outbox 路径已隔离
+    # 使用真实 start（smoke 链）；outbox 与 outputs 路径都隔离，
+    # 否则会在产物目录留下 proj_evt_test/workflows/*/state.json（一个 run 留一个）
+    monkeypatch.setattr(workflows, "OUTPUTS_DIR", str(tmp_path / "outputs"))
     text = workflows.start_workflow("smoke_local_chain", "proj_evt_test")
     assert "工作流已启动" in text or "工作流" in text
     events, _, _ = isolated_events

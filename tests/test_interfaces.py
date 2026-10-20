@@ -7,6 +7,7 @@ import re
 import shutil
 from pathlib import Path
 
+import pytest
 from pymatgen.core import Lattice, Structure
 
 from server.matcalc import interfaces as mi
@@ -79,6 +80,7 @@ def test_bad_poscar_rejected():
 
 # ---------- build_interface ----------
 
+@pytest.mark.slow
 def test_build_interface_full_pipeline():
     out = mi.build_interface(
         FILM_NEAR, SUB_NEAR, film_miller="0,0,1", substrate_miller="0 0 1",
@@ -93,6 +95,7 @@ def test_build_interface_full_pipeline():
     assert mc_st.parse_poscar(body).startswith("## 结构摘要")  # 自家解析器可读回
 
 
+@pytest.mark.slow
 def test_build_interface_save(tmp_path, monkeypatch):
     proj_root = tmp_path / "proj"
 

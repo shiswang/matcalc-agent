@@ -269,7 +269,7 @@ def generate_vasp_inputs(
         f"SYSTEM = {comp.reduced_formula} ({calc_type})",
         f"ENCUT = {encut}",
         "PREC = Accurate",
-        f"EDIFF = 1E-5",
+        "EDIFF = 1E-5",
         "LREAL = Auto",
     ]
     for key, val in tpl.items():
@@ -382,7 +382,7 @@ def generate_vasp_inputs(
         save_note = f"\n输入文件已保存到目录: {d}（INCAR / KPOINTS / POSCAR / make_potcar.sh）"
 
     return (
-        f"## 参数校验报告\n" + "\n".join(report) + "\n\n"
+        "## 参数校验报告\n" + "\n".join(report) + "\n\n"
         f"## INCAR\n```\n{incar_text}```\n"
         f"## KPOINTS\n```\n{kpoints_text}```\n"
         f"## POTCAR 拼接脚本（bash）\n```bash\n{potcar_script}```{save_note}"
@@ -506,7 +506,7 @@ def generate_band_inputs(poscar_text: str, line_density: int = 20, encut: Option
             f"ENCUT = {encut_v}",
             "PREC = Accurate",
             "EDIFF = 1E-6",
-            f"ISMEAR = 0",
+            "ISMEAR = 0",
             "SIGMA = 0.05",
             "LCHARG = .TRUE.",
             "LWAVE = .FALSE.",

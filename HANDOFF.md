@@ -22,7 +22,7 @@
 - **规模约定**：MCP 工具 **62 个**，由 `tests/test_registry.py` 断言锁定。
 - **当前科研线**：`024_CuFeMn`（P2 型 Na 层状氧化物，V 与 Cu 两条替代系列）——
   **V 系列按约定 +U 重算已全部完成并打包；Cu 系列 24 个缺陷同样已完成（弛豫 + 统一静态 + 形成能 + 复核 + 与 V 对比）**。
-- **验证状态**：全量 `pytest tests` **253 passed**（2026-10-20）；`scripts/smoke_local.ps1` 报 `SMOKE PASS` / 62 tools。
+- **验证状态**：全量 `pytest tests` **307 passed**（2026-10-20）；`scripts/smoke_local.ps1` 报 `SMOKE PASS` / 62 tools。
 
 ---
 
@@ -57,7 +57,7 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1   REM 期望 SM
 |---|---|
 | 仓库 | `D:\personal_files\pycharm\Ai_model\matcalc-agent` |
 | 远程 | `git@github.com:shiswang/matcalc-agent.git`（私有） |
-| 分支 | `main`（当前 `d689777`）；`wip/finish-uncommitted` 仅留历史，**禁止整支合并** |
+| 分支 | `main`（当前锚点见 §9）；`wip/finish-uncommitted` 仅留历史，**禁止整支合并** |
 | Python | `.venv\Scripts\python.exe` |
 | MCP 启动 | `scripts\run_mcp.bat`（stdio） |
 | 离线验收 | `scripts\smoke_local.ps1`（内部调 `scripts\smoke_local.py`） |
@@ -65,6 +65,22 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1   REM 期望 SM
 | 赝势库 | `potcars/potpaw_PBE/<变体>/POTCAR`（343 个变体，不入 git） |
 | 科研产物 | `server/outputs/<project>/`（不入 git） |
 | 项目知识 | Obsidian Vault `20_项目/MatCalcAgent/`（见 §8） |
+
+### 3.1 outputs 目录治理（2026-10-20 新增）
+
+| 项 | 做法 |
+|---|---|
+| 落盘入口 | 统一走 `common.out_dir(project, kind)`；`kind` → `structures/ inputs/ dos_pdos/ results/ reports/`，workflow 落 `workflows/<wf_id>/` |
+| 写盘重定向 | `MATCALC_OUTPUTS_DIR` 环境变量可整体改写 outputs 根；`tests/conftest.py` 在导入 `server.main` **之前**把它指到临时沙箱，并在会话首尾清空 |
+| 输入集归属 | `generate_vasp_inputs(..., project=...)` 写到 `outputs/<project>/inputs/<formula>_<type>_<ts>/`；`project` 缺省仍写 outputs 根（旧行为，仅兼容） |
+| 项目登记 | 首次创建项目目录时自动写 `outputs/projects.json`（**索引，不是真相**；`_` 前缀与 `pytest_*` 不登记）。人工查看用 `common.list_projects()` |
+| 历史遗留 | 140 个 `<Formula>_<type>_<ts>` 测试目录 → `server/outputs/_archive_test_runs/legacy_20261020/`；另有 5 个「结构 + 未跑完输入」的早期 demo 目录（NaCl / NaCl_case / NaCl_demo / M5_crown / NaMnO2_O3）→ `server/outputs/_archive_legacy_projects/`。**均未删除**；脚本 `scripts/migrate_outputs_registry.py`（支持 `--dry-run`）可重跑 |
+
+顶层目录 **163 → 15**：9 个真实项目（清单见 `outputs/projects.json`）+ `demos/ knowledge/ mp_gallery/ _tools/` 四个功能性目录 + `_archive_test_runs/ _archive_legacy_projects/` 两个归档目录。
+
+> **脚本不许住在 outputs 里**（2026-10-20 血的教训）：`server/outputs/` 被 `.gitignore` 排除，
+> 住在里面的脚本 = 没有版本控制 = 换机即丢。024 campaign 的驱动 / 复核 / 打包脚本已迁到
+> `scripts/campaigns/024_CuFeMn_V/`（入 git），数据留在 outputs，两者用 `campaign_paths.py` 连接。
 
 ---
 
@@ -269,7 +285,7 @@ Ef(N 取代 O) = E(N1O35) − E(parent) + ½E(O2) − ½E(N2)
 
 ### 7.6 Cu 系列（**已完成**，2026-10-20）
 
-- 工作流 `024_CuFeMn_V/workflows/cu_u_convention_20261017/`（脚本在 `024_CuFeMn_Cu/`），5/5 步 `done`，rev 189。
+- 工作流 `024_CuFeMn_V/workflows/cu_u_convention_20261017/`（脚本在 `024_CuFeMn_V/cu/`），5/5 步 `done`，rev 189。
 - 母体弛豫 job 1059634（6 离子步，E₀=−402.39308967 eV，V=747.296 Å³，29 μB）；**母体静态 −402.41000035 eV**（与弛豫末态只差 −0.017 eV）。
 - 24/24 缺陷弛豫收敛（22–150 离子步，中位数 74）；25/25 静态通过协议核对。
   最后两个（`MnTiNi_O-van` 1061830 / `TiMnMn_O-van` 1061831）用第 3 级配方（NELM=240 + 混合）各跑 66 min 收敛，
@@ -281,12 +297,37 @@ Ef(N 取代 O) = E(N1O35) − E(parent) + ½E(O2) − ½E(N2)
 - **磁态**：17/24 个缺陷静态与弛豫的总磁矩差 > 1 μB（集中在整数 μB），静态与弛豫末态能量差 0.001–1.742 eV
   （平均 0.444）→ **< 0.1 eV 的位点排序不可信**。
 - 独立复核 `verify_cu_defect_energies.py`：直读 50 个 OUTCAR，24 个形成能**零偏差**。`compare_cu_v.py` 输出 `cu_vs_v_comparison.csv`。
+- **数据包已出**：`package/024_CuFeMn_Cu_VASP_data.zip`（84.3 MB，340 文件，每个计算目录只留 6 个文件；
+  manifest.csv 带物种/原子数/能量，README 用 Cu 约定与 Cu 位点表；`results/` 内含
+  `formation_energies.json|csv`、Cu–V 对比三件套与 `cu_results_audit.json`）。
+  打包命令：`VCALC_CAMPAIGN=cu python package_vasp_data.py`。
 - 与旧 Cu 项目的本质差别：**旧项目 24 个缺陷只做过静态、从未弛豫，且没留 INCAR**；本批以旧静态几何为起点**从零弛豫**，
   旧项目还混用了 `Fe_sv` 与 `_pv` 赝势，本批统一为全 `_pv`。
 
 ### 7.7 目录与脚本地图
 
 ```text
+scripts/campaigns/024_CuFeMn_V/      # 代码（2026-10-20 从 outputs/ 迁出，已入 git）
+├── README.md                        # 布局 / 变量 / 命令
+├── campaign_paths.py                # 唯一定义"数据在哪"（DATA_ROOT / CU_DATA / REPO）
+├── run_bk_unified.py                # 共享 helper（ROOT/CFG/SSH/SCP/moments）
+├── run_v2_campaign.py               # V 驱动
+├── monitor_v2_campaign.py           # V 轮询
+├── verify_defect_energies.py        # V 独立复核（v1|v2）
+├── package_vasp_data.py             # 打包（VCALC_CAMPAIGN=v1|v2|cu）
+├── check_packaging_channels.py      # 三条打包通道的回归检查
+├── compare_v1_v2.py
+└── cu/                              # Cu 线代码
+    ├── run_cu_campaign.py           # Cu 驱动（import run_v2_campaign 复用 helper）
+    ├── monitor_cu_campaign.py       # 轮询（interval / max_iter / gate）
+    ├── audit_cu_statics.py          # 提交前本地 INCAR 协议审计
+    ├── audit_cu_statics_returned.py # 回收后四查：核数/段序/U/k 点
+    ├── verify_cu_defect_energies.py # 独立复核（直读 OUTCAR）
+    ├── compare_cu_v.py              # Cu vs V 共同 8 位点对比
+    ├── analyze_cu_vs_v.py           # Cu 能量表与相对排名
+    ├── site_table.py                # 12 位点表
+    ├── compare_u_assignment.py / audit_cu_results.py
+
 server/outputs/024_CuFeMn_V/          # 数据与结果（不入 git）
 ├── workflows/
 │   ├── v2_u_convention_20261016/     # V 系列（done）
@@ -295,27 +336,22 @@ server/outputs/024_CuFeMn_V/          # 数据与结果（不入 git）
 │   └── nitrogen_formation_ref_20261015/  # N2 参考态
 ├── defect_formation_comparison_v2/   # V 结果（csv/json/png/svg）
 ├── defect_formation_comparison_cu/   # Cu 结果（csv/json/png/svg）
-├── package/024_CuFeMn_V_VASP_data.zip
+├── package/024_CuFeMn_V_VASP_data.zip      # V 系列数据包（46 MB）
+├── package/024_CuFeMn_Cu_VASP_data.zip    # Cu 系列数据包（84.3 MB，2026-10-20 新出）
 ├── METHODS.md / README.md / U_CONVENTION_RECOMPUTE.md
-├── run_v2_campaign.py                # V 驱动（通用 helper 都在这里）
-├── monitor_v2_campaign.py            # V 轮询
-├── verify_defect_energies.py         # 独立复核（v1|v2）
-├── package_vasp_data.py              # 打包（VCALC_CAMPAIGN=v1|v2；Cu 尚未打包，需另加分支）
-└── compare_v1_v2.py
-
-server/outputs/024_CuFeMn_Cu/         # Cu 脚本与过程记录
-├── run_cu_campaign.py                # Cu 驱动（import run_v2_campaign 复用 helper）
-├── monitor_cu_campaign.py            # 轮询（interval / max_iter / gate）
-├── audit_cu_statics.py               # 提交前本地 INCAR 协议审计
-├── audit_cu_statics_returned.py      # 回收后四查：核数/段序/U/k 点
-├── verify_cu_defect_energies.py      # 独立复核（直读 OUTCAR）
-├── compare_cu_v.py                   # Cu vs V 共同 8 位点对比 → cu_vs_v_comparison.csv
-├── site_table.py                     # 12 位点表（邻接金属 + 到 Cu 距离）
-├── METHODS.md                        # §6 结果已填
-└── _archive_20261020/                # 一次性脚本与日志（只归档，不删除）
+├── cu/                               # Cu 线的过程记录与旧项目原始输入
+│   ├── cu_original/                  # 旧 Cu 项目的 OUTCAR（只读原始输入）
+│   ├── METHODS.md                    # §6 结果已填
+│   ├── cu_vs_v_comparison.csv / cu_vs_v_relative.csv / cu_vs_v.json
+│   └── _archive_20261020/            # 一次性脚本与日志（只归档，不删除）
+└── （v1 时代的一次性脚本 21 个仍留在此目录，**故意不入 git**，清单见 scripts/campaigns/024_CuFeMn_V/README.md）
 ```
 
 每个算例在本地 `workflows/<wf>/00_*/<stage>/collected/<name>/` 与远端 `$HOME/matcalc/<project>/<wf>/<stage>/<name>/` 一一对应。
+
+> **代码与数据分开**（2026-10-20 定）：脚本在 `scripts/campaigns/024_CuFeMn_V/`（入 git），
+> 数据在 `server/outputs/024_CuFeMn_V/`（不入 git）。脚本一律通过 `campaign_paths.py` 取数据根目录，
+> **不要把 `__file__` 的父目录当数据目录**——那正是当初脚本随磁盘一起消失的原因。
 
 ### 7.8 事故与教训（必读）
 
@@ -334,6 +370,22 @@ server/outputs/024_CuFeMn_Cu/         # Cu 脚本与过程记录
    却查不到原因。现改为移到远端 `prev/`。
 8. **清目录时注意作业是否在跑**：本次曾把两个正在 RUNNING 的作业的输出文件删掉（已 unlink），只能取消重投。
 9. **重启 monitor 前先杀旧进程**：`advance_workflow` 会级联推进，旧进程用旧代码继续跑会做出与当前代码不一致的动作。
+10. **跨驱动复用 helper 时别改别人的模块级常量**（2026-10-20 已修）：`cu/run_cu_campaign.py` 曾写 `v2.CONVENTION = CONVENTION`
+    想"把 v2 的 helper 指向 Cu 的约定"。两个驱动在同一进程共享模块，这一行把 v2 的 V 3.25 覆盖成 Cu 1.9，
+    v2 再生成 V 体系直接 `KeyError: 'V'`。修法：**各自定义常量**，只复用无状态函数；
+    并在 import 时加断言（`assert v2.CONVENTION['V'] == 3.25 and 'Cu' not in v2.CONVENTION`）做哨兵。
+    → **判断依据：`v2.<常量>` 在 v2 里被读的位置，是否真的被 Cu 调用过**（本例中 3 个常量全无读取点，属纯污染）。
+11. **重构搬家后，未定义名要靠工具查而不是靠想**（2026-10-20 接入 ruff 抓到的）：把 outputs 常量搬进
+    `server/matcalc/common.py` 时，`parsing.py` / `plotting.py` 里"相对路径 → 去 outputs 根找"的调用点没跟着改，
+    `_OUTPUTS_DIR` 在这两个模块**根本不存在** → 走到那条分支就 `NameError`（`analyze_vasprun` / `parse_bader_acf` /
+    `plot_band` / `plot_pdos` 四条路径）。pyflakes 的 **F821** 一秒定位；`tests/test_outputs_path_fallback.py` 已把它钉住
+    （红/绿都验过）。→ **搬常量/改模块边界后，用静态检查过一遍，别靠"应该没漏"**。
+12. **两驱动的"重复"没有想象的大**（2026-10-20 实测修正）：初判"15/16 同名函数、298 行逐字相同"是按**行级 diff**
+    算的（相似度 34%），容易高估。改用 **AST 归一化逐函数比较**后：15 个同名函数里**只有 2 个真正逐字相同**
+    （`_assert_incar_stage`、`handle`），其余 13 个已按各自体系的约定/路径改写。
+    → 结论：**"抽公共模块"的收益比估计小、风险比估计大**（这些是提交集群作业、又无法离线验证的代码），
+    改为把同构关系显式钉住：`tests/test_campaign_driver_parity.py`（共享函数名不许消失、协议级函数必须保持一致、
+    两套 +U 约定必须覆盖同一批元素）。→ **判断重复度要用 AST，不要用行级 diff**。
 
 ---
 
@@ -381,23 +433,27 @@ D:\personal_files\pycharm\Ai_model\orbitos          ← 主 Vault（唯一记忆
 
 | 项 | 状态 |
 |---|---|
-| Git | `main @ d689777`；本次提交 `HANDOFF.md` / `MCP.md` / `README.md` / `tests/test_jobs.py` |
+| Git | `main @ 9fc150b`（CI 依赖修复）；本次提交 `HANDOFF.md` |
 | 工具数 | 62（`tests/test_registry.py` 通过） |
-| 全量回归 | `pytest tests` **253 passed**（111 s，`--basetemp=.pytest_tmp_handoff3`） |
-| 冒烟 | 未在本次重跑（交接前须补 `smoke_local.ps1`，期望 62 tools） |
+| 全量回归 | `pytest tests` **307 passed / 1 skipped**（写盘已重定向到临时沙箱，`server/outputs/` 不再被测试污染） |
+| 冒烟 | `smoke_local.ps1` PASS / 62 tools（重定向输出须 UTF-8，否则报 UnicodeEncodeError 假失败） |
+| CI | ✅ 2026-10-20 恢复绿色（此前 2026-08-30 之后 **36 次连续红**，根因 `requirements.txt` 缺 `mcp<2`，见 §11 依赖红线） |
 | V 系列 | ✅ 完成（statics 25/25、形成能 24 行、METHODS/README/zip 齐） |
-| Cu 系列 | ✅ 完成（静态 25/25、形成能 24 行、复核零偏差、与 V 对比已出；**未打包 zip**） |
+| Cu 系列 | ✅ 完成（静态 25/25、形成能 24 行、复核零偏差、与 V 对比已出、**zip 已出** 84.3 MB） |
 | 集群队列 | 本项目作业已全部收；**剩 1 个非本项目作业** `DVoBstatic`(1061378, comput41, 32 核) |
-| 文档 | `024_CuFeMn_Cu/METHODS.md` §6 已填（结果 / Cu-V 对比 / 磁态诊断 / 产物） |
-| 清理 | `024_CuFeMn_Cu/` 一次性脚本与日志已移入 `_archive_20261020/`（未删除） |
+| 文档 | `024_CuFeMn_V/cu/METHODS.md` §6 已填（结果 / Cu-V 对比 / 磁态诊断 / 产物） |
+| 清理 | 一次性脚本与日志已移入 `cu/_archive_20261020/`（未删除） |
 | 第二大脑 | Vault 已定位（§8.2），账本补了 024 条目（#65–#68） |
+| 目录治理 | outputs 顶层 **163 → 15**（140 个测试遗留 + 5 个早期 demo 目录归档，未删除）；`outputs/projects.json` 登记 9 个真实项目；Cu 线脚本并入 `024_CuFeMn_V/cu/`（见 §3.1、§7.7） |
+| campaign 脚本入 git | ✅ 2026-10-20：`scripts/campaigns/024_CuFeMn_V/`（**代码入 git、数据留在 outputs**）。迁移后 9 个可离线脚本输出**逐字节一致**、Cu 包重建的 manifest/README 与旧包相同；v1 时代 21 个一次性脚本仍留 outputs（故意不入 git，清单见该目录 README） |
 
 **接手后第一优先**：
 
 1. ✅ Cu 系列已收尾（`energies` → `METHODS.md` §6 → `verify_cu_defect_energies.py` → `compare_cu_v.py` 全部完成）。
-2. 待定：是否为 Cu 系列出打包 zip（`package_vasp_data.py` 目前只支持 `VCALC_CAMPAIGN=v1|v2`，需加 Cu 分支）。
+2. ✅ Cu 系列打包已完成（`package_vasp_data.py` 现支持 `VCALC_CAMPAIGN=v1|v2|cu`；
+   顺带修掉 manifest 的 species/atoms 空列与 README 目录计数，三条通道用 `check_packaging_channels.py` 回归）。
 3. 待定：`DVoBstatic`(1061378) 不属于本项目，需与作业所有者确认是否该收。
-4. ✅ 已清理 `024_CuFeMn_Cu/` 的一次性脚本与日志（移入 `_archive_20261020/`，未删除）。
+4. ✅ 已清理一次性脚本与日志（移入 `cu/_archive_20261020/`，未删除）。
 
 ---
 
@@ -431,6 +487,9 @@ cd D:\personal_files\pycharm\Ai_model\matcalc-agent
 # 全量离线回归（固定 basetemp，避开系统 Temp ACL）
 .venv\Scripts\python.exe -m pytest tests -q --basetemp=.pytest_tmp_handoff
 
+# 快速回路（跳过两个 ZSL 界面慢用例，约 22 s；改完代码先跑这个）
+.venv\Scripts\python.exe -m pytest tests -q -m "not slow" --basetemp=.pytest_tmp_handoff
+
 # 只验工具数契约
 .venv\Scripts\python.exe -m pytest tests/test_registry.py -q --basetemp=.pytest_tmp_handoff
 
@@ -440,14 +499,27 @@ node --test tests/test_dsh_plugin.mjs
 # 离线冒烟（期望 SMOKE PASS + 62 tools）
 powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1
 
+# 静态检查（ruff：E9 语法错 + pyflakes；首次接入时它抓到了 3 个真 NameError）
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m ruff check .
+
+# 024 campaign 脚本的离线复核（不碰集群；改了 scripts/campaigns/ 就要跑）
+cd scripts\campaigns\024_CuFeMn_V
+..\..\..\.venv\Scripts\python.exe cu\verify_cu_defect_energies.py
+..\..\..\.venv\Scripts\python.exe verify_defect_energies.py v2
+..\..\..\.venv\Scripts\python.exe check_packaging_channels.py v2   # 导临时目录，不覆盖已交付 zip
+
 # Git 卫生
 git status --short; git diff --check
 ```
 
 **提交前**：测试全绿 · 工具数 62 · 未提交 `outputs/`、`.venv/`、`potcars/`、`clusters.json`、`node_modules/` · 无凭据。
 
-> 2026-10-20 实测：全量 `pytest tests` **253 passed**（111 s，`--basetemp=.pytest_tmp_handoff3`）；
+> 2026-10-20 复测：全量 `pytest tests` **307 passed / 1 skipped**（76 s，`--basetemp=.pytest_tmp`）；
 > `smoke_local.ps1` `SMOKE PASS` / `tool_count=62`；工作树干净。
+>
+> **依赖红线**：`requirements.txt` 固定 `mcp>=1.29,<2`。代码用 `mcp.server.fastmcp.FastMCP`，
+> 2.x 已改名 `MCPServer`，升级会让 server 与 CI 同时起不来（2026-09 起 CI 连续 36 次红就是这个原因）。
 > 注意 `scripts/smoke_local.ps1` 已固定 `PYTHONIOENCODING=utf-8`——输出重定向到文件时若不设，
 > Python 会退回 GBK，遇到 `Å` 直接抛 `UnicodeEncodeError`，表现为"验收假失败"。
 
@@ -487,7 +559,7 @@ git status --short; git diff --check
 
 - [x] 收尾 Cu 系列（§9 第一优先）
 - [ ] 决定是否把 `statics` 的增量提交逻辑抽成 `run_v2_campaign.py` 的公共函数（当前两份驱动各一份，是 bug 温床）
-- [x] 把 `024_CuFeMn_Cu/` 的一次性脚本归档（`_archive_20261020/`）
+- [x] 把 Cu 线一次性脚本归档（`cu/_archive_20261020/`）
 - [x] 补 Vault 索引（§8.2 路径已定位，§8.3 门禁已写入）
 
 ---
@@ -503,4 +575,4 @@ git status --short; git diff --check
 | 宿主配置样例 | `adapters/claude-code/`、`adapters/cursor/` |
 | V 系列方法 | `server/outputs/024_CuFeMn_V/METHODS.md` |
 | U 约定事故链 | `server/outputs/024_CuFeMn_V/U_CONVENTION_RECOMPUTE.md` |
-| Cu 系列方法（§6 待填） | `server/outputs/024_CuFeMn_Cu/METHODS.md` |
+| Cu 系列方法（§6 已填） | `server/outputs/024_CuFeMn_V/cu/METHODS.md` |

@@ -13,6 +13,13 @@ potcars/
 # ---- pytest 运行临时目录 ----
 .pytest_tmp*/
 .pytest_cache/
+pytest.xml
+.pytest_out.txt
+/out*.txt
+/rr*.txt
+
+# ---- 外部工具状态（非本仓库内容，装在仓库根只是位置巧合）----
+.mimocode/
 
 # ---- 敏感项双保险：集群私钥路径不入库（clusters.json 本身无凭据）----
 *.key

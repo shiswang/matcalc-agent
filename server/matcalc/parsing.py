@@ -8,6 +8,8 @@ import os
 import re
 from typing import Optional
 
+from .common import OUTPUTS_DIR as _OUTPUTS_DIR
+
 # ─────────────────────────── M2: 结果解析 / 错误诊断 / 远程 ───────────────────────────
 
 # VASP 错误模式库：正则 → (问题说明, 修复建议)
@@ -48,7 +50,6 @@ def parse_vasp_output(outcar_text: str) -> str:
     Returns:
         结构化结果摘要（总能、离子步、收敛状态、力、压力、错误）。
     """
-    import re
 
     lines = outcar_text.splitlines()
 
@@ -146,7 +147,6 @@ def diagnose_vasp_error(log_text: str) -> str:
     Returns:
         匹配到的错误模式 + 修复建议（未匹配时给出提示）。
     """
-    import re
 
     found = []
     for pattern, reason, advice in _VASP_ERROR_PATTERNS:

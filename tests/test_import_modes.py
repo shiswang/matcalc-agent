@@ -33,8 +33,8 @@ def test_script_mode_boot_registers_full_toolset(tmp_path):
         "import sys, os, asyncio\n"
         "sys.path.insert(0, os.path.abspath('server'))\n"
         "import main as m\n"
-        f"tools = asyncio.run(m.mcp.list_tools())\n"
-        f"print('TOOLCOUNT', len(tools))\n"
+        "tools = asyncio.run(m.mcp.list_tools())\n"
+        "print('TOOLCOUNT', len(tools))\n"
     )
     rc, out = _run_script_mode(code, tmp_path)
     assert rc == 0, f"脚本模式启动失败:\n{out}"

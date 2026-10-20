@@ -19,7 +19,8 @@ def test_list_active_workflows_filters_done(clean_test_project):
 
         out = wf.list_active_workflows()
         assert active_id in out
-        assert done_id not in out
+        # wf_id 只在单个 project 内唯一（秒级时间戳），全局扫描必须带上 project 才能判"不存在"
+        assert f"{done_id} | project=active_done_proj" not in out
         assert "waiting_submit" in out
         assert "下一步" in out
     finally:

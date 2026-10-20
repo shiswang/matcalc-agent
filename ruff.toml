@@ -1,0 +1,21 @@
+# Ruff 配置：只管"会出错"的，不管"好不好看"。
+#
+# 选 E9（语法/缩进致命错）+ F（pyflakes：未定义名、未用导入、变量遮蔽、f-string 无占位符…）。
+# 刻意不开的：
+#   E401/E402/E701/E702/E731/E741 —— 这套代码库大量用分号压行、函数内延迟导入（matplotlib
+#   后端、pymatgen 子模块），按通用风格去改只会把历史代码变成噪音。
+#   F401（未用导入）—— server/main.py 有意保留 pymatgen 等再导出/预热；研究脚本里多为一次性代码。
+#   F841（未用变量）—— 多为调试中间值，删掉不增加信息量。
+#
+# 独立配置文件用 [lint]；只有写在 pyproject.toml 里才写 [tool.ruff]。
+line-length = 120
+target-version = "py310"
+exclude = [
+    ".venv",
+    "server/outputs",
+    "node_modules",
+]
+
+[lint]
+select = ["E9", "F"]
+ignore = ["F401", "F841"]

@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: F401
 
-from .common import out_dir as _out_dir
+from .common import OUTPUTS_DIR as _OUTPUTS_DIR, out_dir as _out_dir
 
 
 def _export_origin_txt(base_path: str, header: list[str], x_vals, columns: list) -> str:
@@ -164,7 +164,6 @@ def plot_pdos(
     Returns:
         图片路径、保留/忽略的轨道及内容说明。
     """
-    import numpy as np
     from types import SimpleNamespace
 
     from pymatgen.electronic_structure.core import Spin
