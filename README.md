@@ -44,7 +44,7 @@ matcalc-agent/
 ├── AGENTS.md              # 所有 Agent 项目规矩
 ├── MCP.md                 # 工具接入与场景调用顺序
 ├── server/
-│   ├── main.py            # 入口：61 个 @mcp.tool 注册
+│   ├── main.py            # 入口：62 个 @mcp.tool 注册
 │   ├── remote.py          # ssh/scp 单点
 │   ├── matcalc/           # 功能模块包
 │   └── outputs/           # 生成产物（不入 git）
@@ -67,7 +67,7 @@ matcalc-agent/
 - [x] **M4**：原计划 LAMMPS → 实战变阵为作业守护（submit_and_watch/check_job 反查/LAMMPS 已由 S3 提前补齐）
 - [x] **M5**：自动化闭环 —— workflow 状态机 + auto_submit 三态开关 + params_json 结构注入（08-27 摘冠：真实 POSCAR 注入 → 3712.master 自动 qsub 实演认证）
 
-**当前规模**：49 个 MCP 工具 · 离线回归 + CI · NEB 支持 IDPP · 会话 binding/outbox/CAS（S7）
+**当前规模**：62 个 MCP 工具 · 离线回归 + CI · NEB 支持 IDPP · 会话 binding/outbox/CAS · MP 热力学栈 · AIMD 输入生成
 
 ## 运行 MCP Server
 
@@ -163,7 +163,7 @@ workflow_status("<wf_id>", "NaCl_standard")
 - VASP 步骤可用 `auto_submit=true` 自动提交，也可人工提交后将 `OUTCAR` 放回对应步骤目录
 - 占位结构（未注入真实 POSCAR）会被护栏拦截，不会误提交集群
 
-### 4. 工具族速查（61 个）
+### 4. 工具族速查（62 个）
 
 | 族 | 工具 |
 |---|---|

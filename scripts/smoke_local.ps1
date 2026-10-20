@@ -2,6 +2,8 @@
 # 用法：仓库根执行  .\scripts\smoke_local.ps1
 
 $ErrorActionPreference = "Stop"
+# 输出含中文/Å；重定向到文件时 Python 会退回 GBK 并抛 UnicodeEncodeError，强制 UTF-8
+$env:PYTHONIOENCODING = "utf-8"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 

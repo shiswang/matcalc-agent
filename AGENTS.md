@@ -52,6 +52,9 @@
 - 改 `server/main.py` 后 MCP 进程**不热载**，需重启后由下次调用拉起。
 - pytest 用 `--basetemp=.pytest_tmp_<标识>`（系统 Temp 可能 ACL 拒绝）。
 - 控制台中文/Å 输出前设 `PYTHONIOENCODING=utf-8`。
+- **VASP 多核 PBS 必须 `mpirun -np $NPROC -machinefile $PBS_NODEFILE`**；裸 `vasp_std` 会单核。开跑后查 `running on N total cores`。
+- **LDAUL/LDAUU/LDAUJ 长度必须等于 POSCAR 物种数**，且与物种序一一对应。
+- **提交后 30 秒四查**：total cores / LDAU 长度 / POTCAR TITEL 序 / qstat ppn。
 
 ## 提交前自检
 

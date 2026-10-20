@@ -13,7 +13,8 @@ def _has_real_topology() -> bool:
 def test_nodes_registry_keys():
     if not _has_real_topology():
         pytest.skip("本机真实拓扑(master/hzw)不在——CI example 引导下跳过实机断言")
-    assert set(mc.NODES) == {"master", "hzw"}
+    # master / hzw / bkzhang 都是本机 clusters.json 里的真实节点
+    assert set(mc.NODES) == {"master", "hzw", "bkzhang"}
 
 
 def test_master_profile():
@@ -33,6 +34,20 @@ def test_hzw_profile():
     assert n["queue"] == "hzw"
     assert n["max_ppn"] == 96
     assert "oneapi/setvars.sh" in n["vasp_setup"]
+    assert n["vasp_exe"].endswith("vasp.6.6.0/bin/vasp_std")
+
+
+def test_bkzhang_profile():
+    if not _has_real_topology():
+        pytest.skip("本机真实拓扑不在——跳过")
+    n = mc.NODES["bkzhang"]
+    assert n["scheduler"] == "slurm"
+    assert n["queue"] == "p39041fcf59"
+    assert n["max_ppn"] == 48
+    # MKL 走 intel 模块，libstdc++ 走 home 里的 conda env（系统 /lib64 太旧）
+    assert "compiler/intel/2021.3.0" in n["vasp_setup"]
+    assert "mpi/intelmpi/2021.3.0" in n["vasp_setup"]
+    assert ".conda/envs/casm/lib" in n["vasp_setup"]
     assert n["vasp_exe"].endswith("vasp.6.6.0/bin/vasp_std")
 
 
