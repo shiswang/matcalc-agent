@@ -5,14 +5,74 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import time
 from typing import Optional
 
 # ---------- 输出目录约定 ----------
 
-# outputs 根目录：server/outputs（与 main.py 保持同一落位规则）
-OUTPUTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
+# outputs 根目录：server/outputs（与 main.py 保持同一落位规则）。
+# 测试可用 MATCALC_OUTPUTS_DIR 指向沙箱，避免污染真实项目目录。
+OUTPUTS_DIR = os.environ.get("MATCALC_OUTPUTS_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs"
+)
+
+# 项目登记表：outputs/projects.json。只是索引，不是真相——真相仍是各项目自己的目录与 state.json。
+PROJECTS_JSON = os.path.join(OUTPUTS_DIR, "projects.json")
+
+# 不登记的项目名：下划线开头（内部/沙箱）、pytest_* 测试专用
+_NON_PROJECT_PREFIX = ("_", "pytest")
+
+
+def _register_project(name: str) -> None:
+    """把项目名登记进 outputs/projects.json（幂等）。
+
+    只记录"出现过"与最后使用时间，不参与任何校验或清理；
+    下划线开头 / pytest_* 视为内部目录，不登记。
+    """
+    if not name or name.startswith(_NON_PROJECT_PREFIX):
+        return
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    data: dict = {}
+    if os.path.isfile(PROJECTS_JSON):
+        try:
+            with open(PROJECTS_JSON, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+    projects = data.setdefault("projects", {})
+    entry = projects.get(name)
+    if entry is None:
+        projects[name] = {"created": now, "last_used": now}
+    else:
+        entry["last_used"] = now
+    try:
+        os.makedirs(OUTPUTS_DIR, exist_ok=True)
+        with open(PROJECTS_JSON, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.write("\n")
+    except OSError:  # 登记失败不该阻断计算
+        pass
+
+
+def list_projects() -> str:
+    """列出已登记项目（文本表格），用于人工查看/排障。"""
+    if not os.path.isfile(PROJECTS_JSON):
+        return "（尚无登记；outputs/projects.json 不存在）"
+    try:
+        with open(PROJECTS_JSON, encoding="utf-8") as f:
+            projects = json.load(f).get("projects", {})
+    except (OSError, ValueError) as e:
+        return f"错误：[E_IO] 读取 projects.json 失败（{e}）"
+    if not projects:
+        return "（projects.json 为空）"
+    rows = ["项目\t创建\t最后使用"]
+    for name in sorted(projects):
+        e = projects[name]
+        rows.append(f"{name}\t{e.get('created', '')}\t{e.get('last_used', '')}")
+    return "\n".join(rows)
 
 _KIND_DIRS = {
     "structure": "structures",   # 建模/可视化
@@ -24,10 +84,17 @@ _KIND_DIRS = {
 
 
 def out_dir(project: Optional[str] = None, kind: Optional[str] = None) -> str:
-    """输出目录：outputs/[<project>/][<kind>/]，自动创建。project 为空时保持根目录散放（兼容旧行为）。"""
+    """输出目录：outputs/[<project>/][<kind>/]，自动创建。project 为空时保持根目录散放（兼容旧行为）。
+
+    首次为一个项目创建目录时，顺手登记到 outputs/projects.json（只登记，不做校验）。
+    """
     base = OUTPUTS_DIR
     if project:
-        base = os.path.join(base, project.strip("/\\"))
+        name = project.strip("/\\")
+        pdir = os.path.join(base, name)
+        if not os.path.isdir(pdir):
+            _register_project(name)
+        base = pdir
         if kind:
             base = os.path.join(base, _KIND_DIRS.get(kind, kind))
     os.makedirs(base, exist_ok=True)

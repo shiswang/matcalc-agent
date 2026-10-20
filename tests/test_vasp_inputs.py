@@ -256,3 +256,31 @@ def test_aimd_inputs_executes(nacl_poscar_text):
         assert "IBRION = 0" in text and "MDALGO" in text and "TEBEG" in text
     finally:
         _cleanup_gen_project()
+
+
+# ---------- calc_type 与离子步参数的自洽性（防模板被改错） ----------
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("calc_type,expect_nsw,expect_ibrion", [
+    ("relax", 100, 2),
+    ("static", 0, -1),
+    ("bands", 0, -1),
+    ("dos", 0, -1),
+    ("elastic", 1, 6),
+])
+def test_incar_stage_matches_calc_type(nacl_poscar_text, calc_type, expect_nsw, expect_ibrion):
+    out = mc.generate_vasp_inputs(nacl_poscar_text, calc_type=calc_type, save=False)
+    assert not out.startswith("错误"), out[:200]
+    assert f"NSW = {expect_nsw}" in out
+    assert f"IBRION = {expect_ibrion}" in out
+
+
+def test_stage_guard_rejects_broken_static_template(nacl_poscar_text, monkeypatch):
+    """模板被改错（静态带 NSW=200）时必须报错，而不是静默跑成第二次弛豫。"""
+    broken = dict(mc._INCAR_TEMPLATES["static"])
+    broken.update({"NSW": 200, "IBRION": 2, "ISIF": 3})
+    monkeypatch.setitem(mc._INCAR_TEMPLATES, "static", broken)
+    with pytest.raises(RuntimeError):
+        mc.generate_vasp_inputs(nacl_poscar_text, calc_type="static", save=False)

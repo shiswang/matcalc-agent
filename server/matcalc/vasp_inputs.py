@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from typing import Optional
 
@@ -48,6 +49,51 @@ _INCAR_TEMPLATES: dict[str, dict] = {
         "ISMEAR": None, "SIGMA": 0.1, "NFREE": 4,
     },
 }
+
+# calc_type → 期望的离子步设置（NSW, IBRION）。防止模板被改错后静默产出"假静态"。
+_STAGE_EXPECT: dict[str, tuple[object, tuple[int, ...]]] = {
+    "relax": (">0", (1, 2, 3)),
+    "static": (0, (-1,)),
+    "bands": (0, (-1,)),
+    "dos": (0, (-1,)),
+    "elastic": (None, (6,)),
+}
+
+
+def _check_stage_consistency(incar_text: str, calc_type: str) -> None:
+    """校验 calc_type 与 INCAR 里的离子步参数自洽。
+
+    静态（static / bands / dos）必须是 NSW=0 + IBRION=-1；relax 必须 NSW>0 且 IBRION∈{1,2,3}；
+    elastic 必须 IBRION=6。这道检查防的是"模板被改错"：那种错误下 U / ENCUT / k 点全部合规，
+    只有离子步参数不对，下游的协议核对发现不了，只会把静态跑成第二次弛豫。
+    """
+    kv: dict[str, str] = {}
+    for line in incar_text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        m = re.match(r"^([A-Z][A-Z0-9_]*)\s*=\s*([^\s#]+)", s)
+        if m and m.group(1) not in kv:
+            kv[m.group(1)] = m.group(2)
+    if "NSW" not in kv or "IBRION" not in kv:
+        raise RuntimeError(f"INCAR 缺少 NSW/IBRION，无法校验 calc_type={calc_type!r}")
+    try:
+        nsw, ibrion = int(float(kv["NSW"])), int(float(kv["IBRION"]))
+    except ValueError:
+        raise RuntimeError(f"INCAR 的 NSW/IBRION 非数值：{kv['NSW']!r} / {kv['IBRION']!r}")
+
+    want_nsw, want_ibrion = _STAGE_EXPECT[calc_type]
+    if ibrion not in want_ibrion:
+        raise RuntimeError(
+            f"calc_type={calc_type!r} 生成了 IBRION={ibrion}，应为 {want_ibrion}（模板被改错？）"
+        )
+    if want_nsw == ">0" and nsw <= 0:
+        raise RuntimeError(f"calc_type={calc_type!r} 生成了 NSW={nsw}，应为正整数")
+    if want_nsw == 0 and nsw != 0:
+        raise RuntimeError(
+            f"calc_type={calc_type!r} 生成了 NSW={nsw}，应为 0（静态会被跑成弛豫）"
+        )
+
 
 # 常见金属元素（用于 ISMEAR 建议）
 _METALS = {
@@ -110,6 +156,7 @@ def generate_vasp_inputs(
     ldau_l: Optional[str] = None,
     magmom: Optional[str] = None,
     ispin: Optional[int] = None,
+    project: Optional[str] = None,
 ) -> str:
     """生成 VASP 输入文件（INCAR + KPOINTS + POTCAR 拼接脚本）。
 
@@ -120,6 +167,8 @@ def generate_vasp_inputs(
         kpoint_density: 倒空间 k 点密度 (1/Å)；缺省 0.04。
         ismear: ISMEAR 覆盖值（-5 绝缘体/半导体, 0 需 SIGMA, 1 金属）。
         save: 是否将输入文件写入 outputs 目录（默认 True）。
+        project: 项目名；给出时输入集写到 outputs/<project>/inputs/<formula>_<type>_<ts>/，
+            缺省写 outputs/ 根（旧行为，仅兼容）。
         ivdw: 色散校正（11=Grimme D3, 12=D3(BJ)）；None 不写 IVDW 行。
         ldau_u: +U 有效 U(eV)，格式 "元素=数值,元素=数值"（如 "Ti=4.5,Mn=4.0"）；
             固定 Dudarev 方案（LDAUTYPE=2、LDAUJ=0、LMAXMIX=4）；
@@ -277,6 +326,7 @@ def generate_vasp_inputs(
         lines.append("# ===== 色散校正 =====")
         lines.append(f"IVDW = {ivdw}  # 11=Grimme D3, 12=D3(BJ)")
     incar_text = "\n".join(lines) + "\n"
+    _check_stage_consistency(incar_text, calc_type)
 
     # 6. POTCAR 拼接脚本（不捆绑版权数据）
     script_lines = [
@@ -318,9 +368,8 @@ def generate_vasp_inputs(
     # 8. 保存
     save_note = ""
     if save:
-        os.makedirs(_OUTPUTS_DIR, exist_ok=True)
         tag = f"{comp.reduced_formula}_{calc_type}_{int(time.time())}"
-        d = os.path.join(_OUTPUTS_DIR, tag)
+        d = os.path.join(_out_dir(project, "input"), tag)
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "INCAR"), "w", encoding="utf-8") as f:
             f.write(incar_text)

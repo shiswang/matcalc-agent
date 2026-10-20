@@ -13,6 +13,7 @@
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,11 @@ if str(ROOT) not in sys.path:
 
 # matplotlib 无头后端必须在导入 server.main 之前设定
 os.environ.setdefault("MPLBACKEND", "Agg")
+
+# 测试期把所有"写"重定向到临时沙箱：不在 server/outputs/ 下生成 NaCl_relax_<ts>/ 之类目录。
+# 读真实锚点仍走下面的 OUTPUTS 常量（沙箱只影响写入路径）。
+_SANDBOX = os.path.join(tempfile.gettempdir(), "matcalc_pytest_outputs")
+os.environ.setdefault("MATCALC_OUTPUTS_DIR", _SANDBOX)
 
 import server.main as mc  # noqa: E402
 
@@ -88,12 +94,26 @@ def nacl_pdos_export() -> Path:
     return p
 
 
+# ---------- 写盘沙箱 ----------
+# 所有测试写入走 MATCALC_OUTPUTS_DIR（临时目录），真实 server/outputs/ 只读作锚点。
+# 会话开始先清空沙箱，避免上一次跑测试残留的 note/workflow 状态干扰断言。
+
+@pytest.fixture(scope="session", autouse=True)
+def clean_outputs_sandbox():
+    shutil.rmtree(_SANDBOX, ignore_errors=True)
+    os.makedirs(_SANDBOX, exist_ok=True)
+    yield
+    shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
 # ---------- 绘图产物隔离 ----------
 
 @pytest.fixture()
 def clean_test_project():
     """绘图测试专用 project 目录：开始前清空、结束后删除，不污染正式项目数据。"""
-    base = OUTPUTS / TEST_PROJECT
+    from server.matcalc.common import OUTPUTS_DIR  # 路由到当前沙箱（受 env 控制）
+
+    base = Path(OUTPUTS_DIR) / TEST_PROJECT
     shutil.rmtree(base, ignore_errors=True)
     yield TEST_PROJECT
     shutil.rmtree(base, ignore_errors=True)
