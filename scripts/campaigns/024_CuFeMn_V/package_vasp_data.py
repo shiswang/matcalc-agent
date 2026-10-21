@@ -27,6 +27,7 @@ from pathlib import Path
 import run_bk_unified as b
 from pymatgen.io.vasp.inputs import Poscar
 ROOT=b.ROOT
+REPO=b.REPO
 PKG=Path(os.environ.get('VCALC_PACKAGE_DIR') or ROOT/'package')
 BRANCHES=['N-O','O-van']
 LABELS_V=['VMnTi','VNiMn','VTiNi','FeTiNi','MnFeNi','MnFeTi','MnMnV','MnMnFe','MnMnMn','MnMnNi','MnTiNi','TiMnMn']
@@ -75,7 +76,8 @@ elif CAMPAIGN=='cu':
  RESULTS_SRC=ROOT/'defect_formation_comparison_cu'
 else:
  LABELS=LABELS_V
- PKG_NAME='024_CuFeMn_V_VASP_data'
+ # v1 是历史对照通道, 名字必须与 v2 交付包区分开, 否则会把交付包覆盖掉
+ PKG_NAME='024_CuFeMn_V_v1_VASP_data'
  RELAX_PARENT_SRC=ROOT/'result'/'result'/'00_parent_relax'
  RELAX_DEFECT_SRC=ROOT/'result'/'result'/'stage2_defects'
  RELAX_DEFECT_FLAT=False
@@ -133,7 +135,7 @@ def main():
  if STAGE.exists():shutil.rmtree(STAGE)
  STAGE.mkdir(parents=True)
  rows=[];report=[]
- extra=PKG/'remote_extra'/'extracted'
+ extra=Path(os.environ.get('VCALC_REMOTE_EXTRA') or (ROOT/'remote_extra'/'extracted'))
  merged=0
  for p in (extra.rglob('*') if CAMPAIGN=='v1' and extra.exists() else []):
   if not p.is_file():continue
@@ -184,33 +186,17 @@ def main():
    add('static/references',name,'',src,'reference total energy')
  results=RESULTS_SRC
  fe=STAGE/'results';fe.mkdir(parents=True,exist_ok=True)
+ # results/ 只放**本线能量数据**：形成能（csv/json + 图）与参考态能量
+ # 跨线的东西（案例总结、Cu-V 对照）放在交付层，不进任何一个包
  for p in sorted(results.iterdir()):
   if p.is_file():shutil.copy2(p,fe/p.name)
- shutil.copy2(ROOT/'defect_comparison_method.md',fe/'packaging_notes.md')
- shutil.copy2(ROOT/'U_CONVENTION_RECOMPUTE.md',fe/'U_CONVENTION_RECOMPUTE.md')
  if CAMPAIGN=='cu':
   shutil.copy2(ROOT/'cu'/'METHODS.md',STAGE/'METHODS.md')
-  for name in ('cu_vs_v.json','cu_vs_v_comparison.csv','cu_vs_v_relative.csv','cu_data_findings.md'):
-   src=ROOT/'cu'/name
-   if src.exists():shutil.copy2(src,fe/name)
  else:
   shutil.copy2(ROOT/'METHODS.md',STAGE/'METHODS.md')
- provenance=[(ROOT/'workflows/oxygen_formation_refs_20261015/00_references/reference_results.json','O2_reference_results.json'),
-             (ROOT/'workflows/nitrogen_formation_ref_20261015/00_reference/reference_results.json','N2_reference_results.json'),
-             (RESULTS_SRC/'formation_energies.json','formation_energies.json')]
- if CAMPAIGN in ('v1','v2'):
-  provenance += [(ROOT/'xdatcar_validation_summary.json','xdatcar_validation_summary.json'),
-                 (ROOT/'xdatcar_fetch_summary.json','xdatcar_fetch_summary.json')]
- if CAMPAIGN=='v2':
-  provenance.append((ROOT/'workflows/v2_u_convention_20261016/state.json','v2_workflow_state.json'))
- elif CAMPAIGN=='cu':
-  provenance.append((ROOT/'workflows/cu_u_convention_20261017/state.json','cu_workflow_state.json'))
-  provenance.append((ROOT/'cu'/'cu_results_audit.json','cu_results_audit.json'))
- else:
-  provenance += [(ROOT/'workflows/bk_unified_returned_20261014/00_unified_batch/collection_status.json','defect_static_collection_status.json'),
-                 (ROOT/'returned_results_audit.json','relaxation_audit.json'),
-                 (ROOT/'returned_input_checks.json','relaxation_input_checks.json')]
- for src,dst in provenance:
+ energy_refs=[(ROOT/'workflows/oxygen_formation_refs_20261015/00_references/reference_results.json','O2_reference_results.json'),
+              (ROOT/'workflows/nitrogen_formation_ref_20261015/00_reference/reference_results.json','N2_reference_results.json')]
+ for src,dst in energy_refs:
   if src.exists():shutil.copy2(src,fe/dst)
  with (fe/'formation_energies.csv').open(encoding='utf-8-sig') as f:data=list(csv.DictReader(f))
  with (STAGE/'manifest.csv').open('w',encoding='utf-8-sig',newline='') as f:
@@ -227,6 +213,10 @@ def main():
   for p in sorted(STAGE.rglob('*')):
    if p.is_file():z.write(p,p.relative_to(PKG))
  print('zip MB:',round(zip_path.stat().st_size/1e6,1),zip_path)
+ # 暂存目录（解压后的整棵包树，几百 MB）用完即删：交付目录只留 zip
+ if STAGE.exists():
+  shutil.rmtree(STAGE,ignore_errors=True)
+  print('removed staging dir:',STAGE)
 
 def readme(rows,data,report,total,files):
  conf=json.loads((RESULTS_SRC/'formation_energies.json').read_text(encoding='utf-8'))
@@ -236,7 +226,7 @@ def readme(rows,data,report,total,files):
   ndirs=sum(1 for r in rows if r['files'])
   parent_note='v2 重算' if CAMPAIGN=='v2' else 'Cu 母体'
   ref_lines=[f"- 母体静态 parent_static：**{e_parent:.8f} eV**（{parent_note}）",
-             f"- O2 静态（沿用 v1 分子计算，`LDAU=.FALSE.`）：{refs['O2_static_eV']:.8f} eV",
+             f"- O2 静态（`LDAU=.FALSE.`）：{refs['O2_static_eV']:.8f} eV",
              f"- N2 静态（同上）：{refs['N2_static_eV']:.8f} eV",
              f"- μO = {mu_o:.8f} eV，μN = {mu_n:.8f} eV"]
   if CAMPAIGN=='cu':
@@ -245,18 +235,19 @@ def readme(rows,data,report,total,files):
    xd=['','## XDATCAR','',
        f'- 全部 {ndirs} 个目录都带 **VASP 原生 `XDATCAR`**（结构优化为完整轨迹，静态单点为单帧），包内没有重建文件。',
        '- 母体与 24 个缺陷的轨迹全部来自 Cu 计算本身（bkzhang，VASP 6.6.0），没有从 `OUTCAR` 重建、也没有从别处补取。',
-       '- 分子参考（O2/N2）的轨迹沿用第一轮的分子计算：分子计算未启用 +U，不受 U 约定影响。']
-   header_extra=['','> 本包是 **Cu 系列**（约定 +U）的结果。与 V 系列 v2 同协议、同赝势、同 k 网格、',
-                 '> 同 O2/N2 分子参考态，**形成能可直接与 V 系列横向比较**（见 `results/cu_vs_v_comparison.csv`）。']
+       '- 分子参考（O2/N2）的轨迹来自 O2/N2 参考计算：分子计算未启用 +U，不受固体 U 取值影响。']
+   header_extra=['','> 本包是 **Cu 系列**（约定 +U）的结果，只含 Cu 自己的数据。与 V 系列 v2 同协议、同赝势、',
+                 '> 同 k 网格、同 O2/N2 分子参考态，**形成能可直接与 V 系列横向比较**；',
+                 '> 跨线汇总与逐位点对照在交付层（`案例总结.md`、`cu_vs_v/`），**不在本包内**。']
   else:
    u_line=('- DFT+U Dudarev（LDAUTYPE=2，UJ=0）：**Ti 5.2、Mn 3.9、Fe 4.0、Ni 6.2、V 3.25 eV**；Na/N/O 不加 U'
-           '（本组约定；v1 曾误用 Mn 6.2 / Fe 3.9 / Ni 4.0，故本包为按约定重算的 v2 结果）')
+           '（本组约定）')
    xd=['','## XDATCAR','',
        f'- 全部 {ndirs} 个目录都带 **VASP 原生 `XDATCAR`**（结构优化为完整轨迹，静态单点为单帧），包内没有重建文件。',
        '- 母体与 24 个缺陷的轨迹全部来自 v2 计算本身（bkzhang，VASP 6.6.0），没有从 `OUTCAR` 重建、也没有从别处补取。',
-       '- 分子参考（O2/N2）的轨迹沿用第一轮的分子计算：分子计算未启用 +U，不受本次约定修正影响。']
-   header_extra=['','> 本包是 **v2**（按约定 +U 重算）的结果。第一轮（v1）因逐元素 U 映射错误已作废，',
-                 '> 事故证据与重算说明见包内 `results/U_CONVENTION_RECOMPUTE.md`。']
+       '- 分子参考（O2/N2）的轨迹来自 O2/N2 参考计算：分子计算未启用 +U，不受固体 U 取值影响。']
+   header_extra=['','> 本包为 **V 系列**（按约定 +U）的结果：24 个缺陷弛豫 + 25 个统一静态（母体 + 24 缺陷），只含 V 自己的数据。',
+                 '> 跨线汇总与逐位点对照在交付层（`案例总结.md`、`cu_vs_v/`），**不在本包内**。']
   table=[('位点','O 空位','N 取代 O')]
   by=dict(((x['site'],x['branch']),x['formation_eV']) for x in conf['sites'])
   for site in LABELS:
@@ -291,7 +282,7 @@ def readme(rows,data,report,total,files):
   '| `relax/references/O2_relax`、`N2_relax/` | O2、N2 分子结构优化 |',
   '| `static/defects/<位点>/<分支>/` | 24 个缺陷静态单点（NSW=0, IBRION=-1, ISIF=2, ISMEAR=-5） |',
   '| `static/references/` | parent_static、O2_static、N2_static |',
-  '| `results/` | 形成能 CSV/JSON、对比图 PNG/SVG、方法说明、重算说明与溯源（非 VASP 输出） |','',
+  '| `results/` | 形成能 CSV/JSON、对比图 PNG/SVG 与参考态能量（非 VASP 输出） |','',
   '根目录 `METHODS.md` 是完整的计算方法。`<分支>` 为 `N-O`（N 取代 O）或 `O-van`（单纯 O 空位）；位点是 12 个局部环境标签，',
   '缺陷目录共 24 个 = 12 位点 × 2 分支，`relax/` 与 `static/` 下同名对应。','',
   '## 计算参数（全部目录一致）','',
@@ -320,6 +311,9 @@ def readme(rows,data,report,total,files):
   '- 未入包的文件在本地 `server/outputs/024_CuFeMn_V/` 下按工作流目录保留，需要时可直接取用。','',
   '## 其他说明','',
   '- 各目录 `toten_eV`/`sigma0_eV` 见 `manifest.csv`；形成能用的是 `energy(sigma->0)`。',
+  '- `results/case_summary.md` 是本项目的**结论汇总**（两条线的协议、逐位点形成能、Cu-V 对比与可靠性判据）。',
+  '- `results/` 只放**本线能量数据**：形成能（CSV/JSON + 图）与参考态能量。',
+  '- 跨线内容（两条线的汇总与逐位点对照）在交付层：`案例总结.md` 与 `cu_vs_v/`，**不在本包内**。',
   f'- 交付前用 `{VERIFY_SCRIPT}` 独立复核过：逐 OUTCAR 校验 +U 元素对应，并从静态 `OUTCAR` 重算全部形成能。',
   '- 固体静态电子收敛不保证磁性全局基态，位点间接近的能量差需谨慎解释。','']
  return '\n'.join(lines)

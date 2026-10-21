@@ -10,6 +10,7 @@
 | 使用 DSH 会话隔离 | 本文后半「独立 MatCalcAgent Web」（可选） |
 | 私密集群/密钥交接 | [`adapters/HANDOFF_PRIVATE.template.md`](adapters/HANDOFF_PRIVATE.template.md)（填好勿提交） |
 | 项目知识与进度 | Obsidian Vault `20_项目/MatCalcAgent/`（工程仓库外） |
+| 想看一个完整科研案例 | [`docs/024_CuFeMn_案例总结.md`](docs/024_CuFeMn_案例总结.md)（024_CuFeMn V/Cu 两条线：协议 · 结果 · Cu-V 对比 · 可靠性） |
 
 
 ---

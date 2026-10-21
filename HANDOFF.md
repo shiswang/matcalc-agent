@@ -217,6 +217,9 @@ mpirun -np "$SLURM_NTASKS" <vasp_exe> > vasp.out 2>&1
 
 ## 7. 科研线：024_CuFeMn（V / Cu 缺陷形成能）
 
+> **结论汇总在 `docs/024_CuFeMn_案例总结.md`**（一页速览 / 协议 / 两条线结果表 / Cu-V 对比 /
+> 可靠性 / 旧 Cu 项目的坑 / 复现命令与归档位置）。本节是工程细节与不变量。
+
 ### 7.1 科学问题与模型
 
 P2 型 Na 层状氧化物超胞 **Na₁₀Ti₂Mn₁₀Fe₁X₁Ni₄O₃₆**（X = V 或 Cu，64 原子）。
@@ -297,10 +300,11 @@ Ef(N 取代 O) = E(N1O35) − E(parent) + ½E(O2) − ½E(N2)
 - **磁态**：17/24 个缺陷静态与弛豫的总磁矩差 > 1 μB（集中在整数 μB），静态与弛豫末态能量差 0.001–1.742 eV
   （平均 0.444）→ **< 0.1 eV 的位点排序不可信**。
 - 独立复核 `verify_cu_defect_energies.py`：直读 50 个 OUTCAR，24 个形成能**零偏差**。`compare_cu_v.py` 输出 `cu_vs_v_comparison.csv`。
-- **数据包已出**：`package/024_CuFeMn_Cu_VASP_data.zip`（84.3 MB，340 文件，每个计算目录只留 6 个文件；
+- **数据包已出**：`package/024_CuFeMn_Cu_VASP_data.zip`（88.4 MB / 349 条目，每个计算目录只留 6 个文件；
   manifest.csv 带物种/原子数/能量，README 用 Cu 约定与 Cu 位点表；`results/` 内含
-  `formation_energies.json|csv`、Cu–V 对比三件套与 `cu_results_audit.json`）。
-  打包命令：`VCALC_CAMPAIGN=cu python package_vasp_data.py`。
+  `formation_energies.json|csv`、Cu–V 对比三件套、`cu_results_audit.json`、**案例总结副本**与 **7 个复核脚本**）。
+  V 包同结构重建（48.2 MB / 341 条目，`results/scripts/` 2 个）。交付清单与 sha256：`package/交付清单.md`、`package/SHA256SUMS.txt`。
+  打包命令：`VCALC_CAMPAIGN=cu python package_vasp_data.py`；清单：`python make_delivery_index.py`。
 - 与旧 Cu 项目的本质差别：**旧项目 24 个缺陷只做过静态、从未弛豫，且没留 INCAR**；本批以旧静态几何为起点**从零弛豫**，
   旧项目还混用了 `Fe_sv` 与 `_pv` 赝势，本批统一为全 `_pv`。
 
@@ -336,8 +340,13 @@ server/outputs/024_CuFeMn_V/          # 数据与结果（不入 git）
 │   └── nitrogen_formation_ref_20261015/  # N2 参考态
 ├── defect_formation_comparison_v2/   # V 结果（csv/json/png/svg）
 ├── defect_formation_comparison_cu/   # Cu 结果（csv/json/png/svg）
-├── package/024_CuFeMn_V_VASP_data.zip      # V 系列数据包（46 MB）
-├── package/024_CuFeMn_Cu_VASP_data.zip    # Cu 系列数据包（84.3 MB，2026-10-20 新出）
+├── package/                            # **交付目录：整个目录拷走即可**
+│   ├── 024_CuFeMn_V_VASP_data.zip     # V 系列数据包（48.2 MB / 333 条目，只含 V 自己的数据）
+│   ├── 024_CuFeMn_Cu_VASP_data.zip   # Cu 系列数据包（88.4 MB / 333 条目，只含 Cu 自己的数据）
+│   ├── 案例总结.md                    # 跨线汇总（两线协议/逐位点表/对照/可靠性）——不在包里
+│   ├── cu_vs_v/                       # 跨线逐位点对照（Cu vs V）——不在包里
+│   ├── 交付清单.md                    # 目录结构、校验和、接收方怎么验
+│   └── SHA256SUMS.txt                 # 全部交付文件的 sha256
 ├── METHODS.md / README.md / U_CONVENTION_RECOMPUTE.md
 ├── cu/                               # Cu 线的过程记录与旧项目原始输入
 │   ├── cu_original/                  # 旧 Cu 项目的 OUTCAR（只读原始输入）

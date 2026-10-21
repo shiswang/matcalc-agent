@@ -18,6 +18,7 @@ scripts/campaigns/024_CuFeMn_V/
 ├── monitor_v2_campaign.py   # V 轮询（只调 advance_workflow）
 ├── verify_defect_energies.py# V 独立复核（直读 OUTCAR 重算形成能）[v1|v2]
 ├── package_vasp_data.py     # 打包（VCALC_CAMPAIGN=v1|v2|cu）
+├── make_delivery_index.py   # 生成交付清单 + sha256（交付前跑）
 ├── check_packaging_channels.py # 三条打包通道的回归检查（导临时目录，不覆盖已交付 zip）
 ├── compare_v1_v2.py         # v1（作废）与 v2 的形成能对比
 └── cu/
@@ -65,6 +66,11 @@ python cu\compare_cu_v.py
 
 # 打包（写到数据目录的 package/）
 $env:VCALC_CAMPAIGN='cu'; python package_vasp_data.py
+#   v1（历史对照）写到 024_CuFeMn_V_v1_VASP_data.zip, 不会覆盖 v2 交付包
+#   解压暂存目录用完即删; package/ 里只留交付物
+
+# 重新生成交付清单 + sha256（交付前跑）
+python make_delivery_index.py
 
 # 三条通道的回归检查（不覆盖已交付 zip）
 python check_packaging_channels.py v2
