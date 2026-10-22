@@ -1,7 +1,7 @@
 """MCP 注册表完整性 —— 拆包重构的契约测试。
 
 工具数一个不能少、不能多、docstring 描述非空。
-（2026-08-26 可视化移除 30→29；S3 后 42；S4 后 48→49；S8 建模栈一期 49→54）
+（2026-08-26 可视化移除 30→29；S3 后 42；S4 后 48→49；S8 建模栈一期 49→54；后续补足 62；S9 XRD 62→63）
 """
 import asyncio
 
@@ -43,6 +43,8 @@ EXPECTED_TOOLS = {
     "suggest_u", "suggest_magnetism", "record_feedback",
     # S4：任务状态监控
     "monitor_relax", "monitor_aimd",
+    # S9：XRD 模拟与实验谱对照
+    "simulate_xrd",
 }
 
 
@@ -57,7 +59,7 @@ def test_registry_exact_tool_set():
     extra = names - EXPECTED_TOOLS
     assert not missing, f"缺少工具: {sorted(missing)}"
     assert not extra, f"多出工具: {sorted(extra)}"
-    assert len(names) == 62
+    assert len(names) == 63
 
 
 def test_tools_have_descriptions():

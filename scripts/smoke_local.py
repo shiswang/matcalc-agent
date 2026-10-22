@@ -23,16 +23,16 @@ atexit.register(shutil.rmtree, _SANDBOX, ignore_errors=True)
 
 
 def main() -> int:
-    print("== [1/3] MCP tool count (expect 62) ==")
+    print("== [1/3] MCP tool count (expect 63) ==")
     import server.main as mc
 
     tools = asyncio.run(mc.mcp.list_tools())
     n = len(tools)
     print(f"tool_count={n}")
-    if n != 62:
-        print(f"FAIL expected 62 tools, got {n}", file=sys.stderr)
+    if n != 63:
+        print(f"FAIL expected 63 tools, got {n}", file=sys.stderr)
         return 1
-    print("OK tools=62")
+    print("OK tools=63")
 
     print("== [2/3] Offline NaCl structure + VASP inputs ==")
     from pymatgen.core import Lattice, Structure

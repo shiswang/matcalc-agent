@@ -28,7 +28,7 @@
 
 ## 工具契约
 
-- MCP 工具数 **锁定 62**，由 `tests/test_registry.py` 断言。
+- MCP 工具数 **锁定 63**，由 `tests/test_registry.py` 断言。
 - 加工具必须三处同步：模块 `TOOLS` 清单、`server/main.py` 注册循环、registry 测试。
 - 包内跨层导入用 try「相对 → 绝对包路径」回退（脚本直跑与 `python -m` 双模式）。
 
@@ -61,7 +61,7 @@
 ```text
 1. .venv\Scripts\python.exe -m pytest tests -q --basetemp=.pytest_tmp_self
 2. node --test tests/test_dsh_plugin.mjs   （若改了 dsh-plugin）
-3. 工具数仍为 62
+3. 工具数仍为 63
 4. git status：无 outputs/ potcars/ clusters.json 密钥
 ```
 
@@ -71,4 +71,4 @@
 .\scripts\smoke_local.ps1
 ```
 
-期望：依赖可 import、**62 tools**、离线结构冒烟 PASS。
+期望：依赖可 import、**63 tools**、离线结构冒烟 PASS。

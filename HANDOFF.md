@@ -19,7 +19,7 @@
 
 - **是什么**：个人材料计算科研助手。**LLM 只做调度，参数由确定性工具层校验**；交付主体是 MCP Server（`server/`），不是某个聊天壳。
 - **能干什么**：VASP / LAMMPS 建模 → 生成输入 → 远程提交（ssh + scp + `sbatch`/`qsub`）→ 解析 OUTCAR/DOSCAR → 出图出表；带 workflow 状态机（`state.json` 是唯一真相）。
-- **规模约定**：MCP 工具 **62 个**，由 `tests/test_registry.py` 断言锁定。
+- **规模约定**：MCP 工具 **63 个**，由 `tests/test_registry.py` 断言锁定。
 - **当前科研线**：`024_CuFeMn`（P2 型 Na 层状氧化物，V 与 Cu 两条替代系列）——
   **V 系列按约定 +U 重算已全部完成并打包；Cu 系列 24 个缺陷同样已完成（弛豫 + 统一静态 + 形成能 + 复核 + 与 V 对比）**。
 - **验证状态**：全量 `pytest tests` **307 passed**（2026-10-20）；`scripts/smoke_local.ps1` 报 `SMOKE PASS` / 62 tools。
@@ -135,7 +135,7 @@ server/main.py            组装点：循环注册各模块 TOOLS（不含实现
 
 ## 5. 不可破坏的不变量
 
-1. **MCP 工具数锁 62**（`tests/test_registry.py` 断言）。加/删工具必须三处同步：模块 `TOOLS`、`server/main.py` 注册循环、registry 测试。
+1. **MCP 工具数锁 63**（`tests/test_registry.py` 断言）。加/删工具必须三处同步：模块 `TOOLS`、`server/main.py` 注册循环、registry 测试。
 2. **`state.json` 是任务唯一真相**；查询/路由/恢复摘要一律只读，不得自动推进或提交。
 3. **MCP 不直接写 Vault**：只产 `outputs/<project>/reports/note_*.md` 候选片段，由 Agent 按门禁归档。
 4. **禁止按 mtime 猜任务**：多任务必须显式选择，`wf_id` / project 优先于会话历史。
@@ -505,7 +505,7 @@ cd D:\personal_files\pycharm\Ai_model\matcalc-agent
 # Node 插件测试（改了 dsh-plugin 才需要）
 node --test tests/test_dsh_plugin.mjs
 
-# 离线冒烟（期望 SMOKE PASS + 62 tools）
+# 离线冒烟（期望 SMOKE PASS + 63 tools）
 powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1
 
 # 静态检查（ruff：E9 语法错 + pyflakes；首次接入时它抓到了 3 个真 NameError）
@@ -522,7 +522,7 @@ cd scripts\campaigns\024_CuFeMn_V
 git status --short; git diff --check
 ```
 
-**提交前**：测试全绿 · 工具数 62 · 未提交 `outputs/`、`.venv/`、`potcars/`、`clusters.json`、`node_modules/` · 无凭据。
+**提交前**：测试全绿 · 工具数 63 · 未提交 `outputs/`、`.venv/`、`potcars/`、`clusters.json`、`node_modules/` · 无凭据。
 
 > 2026-10-20 复测：全量 `pytest tests` **307 passed / 1 skipped**（76 s，`--basetemp=.pytest_tmp`）；
 > `smoke_local.ps1` `SMOKE PASS` / `tool_count=62`；工作树干净。
@@ -553,7 +553,7 @@ git status --short; git diff --check
 
 **30 分钟**
 
-- [ ] 建 venv、装依赖、跑 `smoke_local.ps1`（期望 62 tools）
+- [ ] 建 venv、装依赖、跑 `smoke_local.ps1`（期望 63 tools）
 - [ ] 跑 `pytest tests -q --basetemp=.pytest_tmp_handoff`，确认与 §11 一致的基线
 - [ ] 读 §5 不变量 + §10 陷阱表
 
@@ -570,6 +570,18 @@ git status --short; git diff --check
 - [ ] 决定是否把 `statics` 的增量提交逻辑抽成 `run_v2_campaign.py` 的公共函数（当前两份驱动各一份，是 bug 温床）
 - [x] 把 Cu 线一次性脚本归档（`cu/_archive_20261020/`）
 - [x] 补 Vault 索引（§8.2 路径已定位，§8.3 门禁已写入）
+
+---
+
+## 14. S9 增量：XRD 模拟（2026-10-22）
+
+- 新工具 `simulate_xrd`（`server/matcalc/xrd.py`）：结构（POSCAR/CIF 文本或路径）→ Cu Kα 等波长粉末谱，
+  返回主峰表（2θ / d / I% / hkl），落盘 PNG + CSV 到 `outputs/<project>/xrd/`。
+- 可选 `reference_text`（如实验 CIF）叠加对照：一对一贪心匹配，输出 Δ2θ 表、双方"独有峰"、体积差，
+  用于 DFT 晶胞 vs 实验晶胞偏差、多晶型/超结构判别（奇 l 超结构峰）。
+- 工具数 **62 → 63**；三处同步已做（`TOOLS` / `main.py` / `test_registry.py`），
+  `scripts/smoke_local.py` 期望值同步改 63，新增 `tests/test_xrd.py`。
+- 无网络/无 MP key 也能用，纯 pymatgen `XRDCalculator`。
 
 ---
 

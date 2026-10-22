@@ -42,12 +42,12 @@ mcp = FastMCP("matcalc-agent")
 try:  # 兼容 python server/main.py（脚本）与 from server import main（包）两种运行方式
     from .matcalc import (
         analysis, analysis_ext, interfaces, lammps, materials_project, monitor, mp_thermo, neb, organize,
-        parsing, plotting, structures, suggest, vault_note, vasp_inputs, workflows,
+        parsing, plotting, structures, suggest, vault_note, vasp_inputs, workflows, xrd,
     )
 except ImportError:  # pragma: no cover
     from matcalc import (
         analysis, analysis_ext, interfaces, lammps, materials_project, monitor, mp_thermo, neb, organize,
-        parsing, plotting, structures, suggest, vault_note, vasp_inputs, workflows,
+        parsing, plotting, structures, suggest, vault_note, vasp_inputs, workflows, xrd,
     )
 
 for _fn in (
@@ -74,6 +74,8 @@ for _fn in (
     *analysis_ext.TOOLS,
     *suggest.TOOLS,
     *monitor.TOOLS,
+    # S9：XRD 模拟与实验谱对照
+    *xrd.TOOLS,
 ):
     mcp.tool()(_fn)
 

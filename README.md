@@ -27,7 +27,7 @@ copy clusters.example.json clusters.json
 
 REM 3) 离线验收（不连集群、不装 DSH）
 powershell -ExecutionPolicy Bypass -File scripts\smoke_local.ps1
-REM   期望：SMOKE PASS 且 tool_count=62
+REM   期望：SMOKE PASS 且 tool_count=63
 
 REM 3b) 静态检查（可选；CI 里会跑）
 .venv\Scripts\pip install -r requirements-dev.txt
@@ -41,7 +41,7 @@ scripts\run_mcp.bat
 REM   客户端配置片段见 MCP.md
 ```
 
-通过第 3 步后，任意 MCP 客户端挂上即可调用 62 个工具。
+通过第 3 步后，任意 MCP 客户端挂上即可调用 63 个工具。
 
 ---
 
@@ -52,7 +52,7 @@ matcalc-agent/
 ├── AGENTS.md              # 所有 Agent 项目规矩
 ├── MCP.md                 # 工具接入与场景调用顺序
 ├── server/
-│   ├── main.py            # 入口：62 个 @mcp.tool 注册
+│   ├── main.py            # 入口：63 个 @mcp.tool 注册
 │   ├── remote.py          # ssh/scp 单点
 │   ├── matcalc/           # 功能模块包
 │   └── outputs/           # 生成产物（不入 git）
@@ -75,7 +75,7 @@ matcalc-agent/
 - [x] **M4**：原计划 LAMMPS → 实战变阵为作业守护（submit_and_watch/check_job 反查/LAMMPS 已由 S3 提前补齐）
 - [x] **M5**：自动化闭环 —— workflow 状态机 + auto_submit 三态开关 + params_json 结构注入（08-27 摘冠：真实 POSCAR 注入 → 3712.master 自动 qsub 实演认证）
 
-**当前规模**：62 个 MCP 工具 · 离线回归 + CI · NEB 支持 IDPP · 会话 binding/outbox/CAS · MP 热力学栈 · AIMD 输入生成
+**当前规模**：63 个 MCP 工具 · 离线回归 + CI · NEB 支持 IDPP · 会话 binding/outbox/CAS · MP 热力学栈 · AIMD 输入生成 · XRD 模拟
 
 ## 运行 MCP Server
 
@@ -171,14 +171,14 @@ workflow_status("<wf_id>", "NaCl_standard")
 - VASP 步骤可用 `auto_submit=true` 自动提交，也可人工提交后将 `OUTCAR` 放回对应步骤目录
 - 占位结构（未注入真实 POSCAR）会被护栏拦截，不会误提交集群
 
-### 4. 工具族速查（62 个）
+### 4. 工具族速查（63 个）
 
 | 族 | 工具 |
 |---|---|
 | 建模 | build_structure · parse_poscar · make_supercell · cleave_surface · import_structure · build_from_spacegroup · edit_structure · primitive_cell · symmetry_report · view_structure_ase |
 | 输入生成 | generate_vasp_inputs · generate_band/dos/optical/elastic/eos/bader_inputs · generate_sbatch |
 | 解析诊断 | parse_vasp_output · analyze_vasprun · diagnose_vasp_error · parse_bader_acf |
-| 绘图分析 | plot_dos · plot_pdos · plot_band · fit_eos |
+| 绘图分析 | plot_dos · plot_pdos · plot_band · fit_eos · simulate_xrd |
 | 远程作业 | configure_remote · check_connection · ssh_run · upload · download · submit_and_watch · check_job |
 | 监控 | monitor_relax · monitor_aimd |
 | 界面/LAMMPS/NEB | build_interface · inspect_interface_match · stack_slabs · build_lammps_data · generate_lammps_inputs · parse_lammps_log · generate_neb_endpoints/images/incar |
@@ -214,7 +214,7 @@ MatCalcAgent 采用“**聊天是视图，workflow 是任务，HPC job 是执行
 DSH session  ≠  workflow_id  ≠  scheduler job_id  ≠  scientific result
 ```
 
-workflow 的权威状态保存在 `outputs/<project>/workflows/<wf_id>/state.json`；聊天只保存近期对话和任务引用，不承担任务状态。任务恢复原语是服务端内部函数，不额外占用 MCP 工具名额，因此 MCP 契约仍为 **62 个工具**：
+workflow 的权威状态保存在 `outputs/<project>/workflows/<wf_id>/state.json`；聊天只保存近期对话和任务引用，不承担任务状态。任务恢复原语是服务端内部函数，不额外占用 MCP 工具名额，因此 MCP 契约仍为 **63 个工具**：
 
 ```python
 list_active_workflows(project=None)                          # 显式任务中心查询

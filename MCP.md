@@ -1,6 +1,6 @@
 # MCP.md — MatCalcAgent 工具接入指南（Agent 无关）
 
-本 Server 通过 **Model Context Protocol (stdio)** 暴露 **62 个工具**。  
+本 Server 通过 **Model Context Protocol (stdio)** 暴露 **63 个工具**。  
 任何支持 MCP 的客户端（Claude Code、Cursor、DSH、自建 Agent）都可直接挂载。
 
 ---
@@ -82,7 +82,7 @@ REM 编辑 nodes：host=user@ip、ssh_key、scheduler、queue、vasp_setup...
 
 ---
 
-## 4. 工具清单（62）
+## 4. 工具清单（63）
 
 ### Materials Project
 `fetch_mp_structure` · `mp_workflow_guide` · `mp_phase_diagram` · `mp_reaction_energy` · `mp_interface_reactions` · `mp_pourbaix_diagram`
@@ -103,6 +103,9 @@ REM 编辑 nodes：host=user@ip、ssh_key、scheduler、queue、vasp_setup...
 
 ### 绘图与拟合
 `plot_dos` · `plot_pdos` · `plot_band` · `fit_eos`
+
+### XRD
+`simulate_xrd`（结构 → 模拟粉末谱 PNG/CSV；可选参考 CIF 叠加 + Δ2θ 与独有峰对照）
 
 ### 远程与作业
 `configure_remote` · `check_connection` · `ssh_run` · `upload` · `download` · `submit_and_watch` · `check_job`
@@ -163,7 +166,7 @@ REM 编辑 nodes：host=user@ip、ssh_key、scheduler、queue、vasp_setup...
 .\scripts\smoke_local.ps1
 ```
 
-通过标准见脚本输出：依赖 OK、**62 tools**、离线 NaCl 冒烟 PASS。
+通过标准见脚本输出：依赖 OK、**63 tools**、离线 NaCl 冒烟 PASS。
 
 ---
 
