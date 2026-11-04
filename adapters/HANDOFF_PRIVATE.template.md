@@ -13,7 +13,7 @@
 |----|-----|
 | GitHub / 压缩包 | |
 | 验收 commit | 例如 `e4309d8` |
-| 本地验收 | 已跑 `scripts/smoke_local.ps1` → SMOKE PASS，62 tools |
+| 本地验收 | 已跑 `scripts/smoke_local.ps1` → SMOKE PASS，63 tools |
 
 ## 2. 环境
 
@@ -63,7 +63,7 @@
 ```powershell
 cd <repo>
 .\scripts\smoke_local.ps1
-# 期望 SMOKE PASS + 62 tools
+# 期望 SMOKE PASS + 63 tools
 
 copy clusters.example.json clusters.json
 # 填入第 3 节字段后：
@@ -76,7 +76,7 @@ copy clusters.example.json clusters.json
 |----|-----|
 | 技术联系人 | |
 | 仓库写权限 | |
-| 变更纪律 | 提交前跑 smoke + pytest；加工具保持 62 契约同步 |
+| 变更纪律 | 提交前跑 smoke + pytest；加工具保持 63 契约同步 |
 
 ## 8. 已知限制（勾选已口头说明）
 

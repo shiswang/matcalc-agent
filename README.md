@@ -2,6 +2,16 @@
 
 基于 MCP 的确定性材料计算工具层（pymatgen / ASE / VASP），**不绑定特定智能体**。
 
+## English summary
+
+MatCalcAgent is an agent-agnostic [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for computational materials science. It exposes **63 deterministic tools** covering structure building (pymatgen / ASE), VASP input generation and validation, HPC job submission and monitoring, output parsing, property workflows (DOS, bands, EOS, Bader, optics, interfaces, NEB, XRD) and Materials Project thermodynamics. Any MCP client — Codex, Claude Code, Cursor or a custom agent — can use it.
+
+The design goal is **reproducible science with LLMs**: the model orchestrates but never free-generates physical parameters; VASP inputs are validated, placeholder structures are blocked from cluster submission, failures use structured `E_*` error codes, and workflow state is idempotent and persisted on disk. The repository contains ~17k lines of Python, a 333-case offline regression suite and GitHub Actions CI. Tool contracts: [`MCP.md`](MCP.md); agent-facing rules: [`AGENTS.md`](AGENTS.md). Released under the [MIT License](LICENSE); VASP binaries, POTCAR pseudopotentials and cluster credentials are not distributed.
+
+中文文档见下文。
+
+---
+
 | 你是谁 | 先看 |
 |--------|------|
 | 任意支持 MCP 的 Agent（Claude Code / Cursor / 自建…） | 本文「四步上手」+ [`MCP.md`](MCP.md) |
@@ -85,6 +95,62 @@ scripts\run_mcp.bat
 
 默认 stdio，供任意 MCP 客户端以 subprocess 拉起。详见 [`MCP.md`](MCP.md)。
 
+## Materials Project（可选联网）
+
+MP 在本仓库里是**结构 + 热力学数据源**，也是 `mp_*` 工作流模板的参照；真正的计算仍由本机/集群 VASP 执行。
+依赖 `mp-api[contribs]`（已在 `requirements.txt`），首次使用设置一次 key（也可在单次调用传 `api_key=`，但不要写进代码或文档）：
+
+```powershell
+$env:MP_API_KEY = "<your-key>"     # https://next-gen.materialsproject.org/api
+```
+
+### 能做什么
+
+| 需求 | 工具 | 联网 | 说明 |
+|---|---|---|---|
+| 按 mp-id / 化学式取结构 | `fetch_mp_structure` | 是 | 转成 VASP5 POSCAR，落盘 `outputs/<project>/structures/`；可直接接 `generate_vasp_inputs` |
+| 看体系凸包与稳定相 | `mp_phase_diagram` | 是 | 拉 MP 条目后用 pymatgen 现算稳定相与形成能（eV/atom） |
+| 算指定反应的 ΔE | `mp_reaction_energy` | 是 | 按书写系数给 ΔE（eV）；负值代表放热倾向 |
+| 两相接触会生成什么 | `mp_interface_reactions` | 是 | 0 K 凸包近似，按反应驱动力排序；可加 `open_circuit="Li"` 这类第三组元 |
+| 电位–pH 稳定性 | `mp_pourbaix_diagram` | 是 | MP aqueous 条目 + pymatgen；可查 `(ph, v)` 单点稳定相 |
+| 把 MP/atomate2 链映射到本仓库 | `mp_workflow_guide` | 否 | 纯离线知识库；topic = structure / relax / electronic / dielectric / elastic / phonon / neb / settings / makers |
+| 跑 MP 风格 VASP 链 | 模板 `mp_relax_static` / `mp_relax_band` | 否 | 本仓库状态机 + VASP；结构可来自 `fetch_mp_structure`，不需要 MP key |
+
+- `mp_relax_static`：relax → static/DOS → 提取 → 报告 → 笔记
+- `mp_relax_band`：relax → static → band → DOS → 提取 → 报告 → 笔记
+
+### 典型链路
+
+```python
+# 1) 取结构（mp-id 或化学式）
+fetch_mp_structure("mp-22862", project="demo")
+
+# 2) 热力学初筛
+mp_phase_diagram("Na-V-O-F")
+mp_reaction_energy("2 Fe2O3 + 3 C -> 4 Fe + 3 CO2")
+mp_interface_reactions("NaF", "V2O5")
+mp_pourbaix_diagram("Fe", ph=0, v=0)
+
+# 3) 真算：MP 风格模板（本机/集群 VASP）
+start_workflow(
+    "mp_relax_band",
+    project="demo",
+    params_json='{"auto_submit": true, "node": "master", "ppn": 8, "poscar_path": "..."}',
+)
+```
+
+### 边界（避免误用）
+
+- **无 key 时**：只有 `mp_workflow_guide` 可用；其余 5 个 MP 工具返回 `E_PARAM`，不影响离线建模/解析。
+- **MP 数值是 MP 的 DFT 结果**：相图/反应/界面为 0 K 近似（不含有限温熵），Pourbaix 为 25 °C 稀溶液近似；这些都不是你的 VASP 结果，适合趋势、凸包与副产物初筛，最终结论以自己计算为准。
+- **不做实验数据检索**：MP 的 synthesis 配方、实验 XRD/PDF 不在封装内；`fetch_mp_structure` 只取结构。
+- **未封装的 MP 取数**：声子、弹性张量、介电、分子/MOF、电池、实验合成配方等仍需到 MP 网站查询，或自行用 `mp-api` 扩展。
+- **不自动匹配结构到 mp-id**：需要自己提供 mp-id 或化学式。
+- **不缓存全库**：每次按需联网拉取，受网络与 MP 配额影响。
+- 工具数仍为 **63**；MP 工具在既有名额内，不额外增加。
+
+无 key 又想快速看结构时，可以手工查 MP 的公开 OPTIMADE 端点
+（`https://optimade.materialsproject.org/v1/structures`）；它不是 MCP 工具，且化学式过滤按字母序（如 NaF → `FNa`），请求需带 `User-Agent`。
 
 ## 使用说明
 
@@ -184,7 +250,7 @@ workflow_status("<wf_id>", "NaCl_standard")
 | 界面/LAMMPS/NEB | build_interface · inspect_interface_match · stack_slabs · build_lammps_data · generate_lammps_inputs · parse_lammps_log · generate_neb_endpoints/images/incar |
 | 工作流 | start_workflow · advance_workflow · workflow_status |
 | 智能建议 | suggest_u · suggest_magnetism · analyze_structure · compare_structures · record_feedback |
-| Materials Project | fetch_mp_structure · mp_workflow_guide · 模板 mp_relax_static |
+| Materials Project | fetch_mp_structure · mp_workflow_guide · mp_phase_diagram · mp_reaction_energy · mp_interface_reactions · mp_pourbaix_diagram · 模板 mp_relax_static / mp_relax_band |
 | 治理报告 | organize_outputs · export_report · export_result_note |
 
 ### 5. 错误码约定
@@ -204,7 +270,7 @@ workflow_status("<wf_id>", "NaCl_standard")
 .venv\Scripts\python.exe -m pytest tests\ -q
 ```
 
-GitHub Actions 自动跑同一套 210 项离线回归，绿码才合入 main。
+GitHub Actions 自动跑同一套离线回归（当前实测 333 passed / 1 skipped），绿码才合入 main。
 
 ### 7. 长任务连续性与会话隔离
 
@@ -231,7 +297,7 @@ route_workflow_request("继续", project, wf_id, workflow_ids)  # 只读寻址
 - **会话焦点从 DSH 持久化 `tool/call` / `tool/result` 事件重建**，重启不依赖进程内存；普通话题发生后，裸控制词不会自动劫持旧任务；
 - 状态查询、路由和恢复摘要均为只读；真正推进仍由模型明确调用 `advance_workflow`，提交由 workflow 的 `auto_submit` 与幂等护栏控制。
 
-DSH bridge 位于 `dsh-plugin/`：它现在是**控制面门卫/定向召回器**，不是第二个任务编排器；`agent/pre-step` 对普通消息和新任务 no-op，只在任务控制请求需要消歧时注入短上下文。配置中的 `matcalcRoot` 由 Web profile 层覆盖为本机仓库路径。这样既保留 49 个 MCP 工具，也避免未相关任务污染当前会话。
+DSH bridge 位于 `dsh-plugin/`：它现在是**控制面门卫/定向召回器**，不是第二个任务编排器；`agent/pre-step` 对普通消息和新任务 no-op，只在任务控制请求需要消歧时注入短上下文。配置中的 `matcalcRoot` 由 Web profile 层覆盖为本机仓库路径。这样既保留 63 个 MCP 工具，也避免未相关任务污染当前会话。
 
 相关成熟模式：LangGraph 的 thread/checkpoint、Temporal 的 Workflow ID/Run ID 与 Query/Signal/Update、OpenAI Agents SDK 的 Session、Letta 的上下文层级。它们共同说明：**会话历史不是长任务状态，任务状态也不应广播到每个会话**。
 
@@ -262,5 +328,11 @@ C:\Users\dell\.dsh-matcalc\
     └── matcalc-web\       专用 profile（含 MCP 与 continuity 插件）
 ```
 
-隔离验证结果：`3080` 见 74 个会话、5 个工作区；`3081` 见 0 个会话（独立存储），其会话真实调用 `mcp__matcalc__parse_poscar`，且 `3080` 会话数不受影响。两个实例共享同一份 `server/outputs/<project>/workflows/` 任务真相与 49 个 MCP 工具。
+隔离验证结果：`3080` 见 74 个会话、5 个工作区；`3081` 见 0 个会话（独立存储），其会话真实调用 `mcp__matcalc__parse_poscar`，且 `3080` 会话数不受影响。两个实例共享同一份 `server/outputs/<project>/workflows/` 任务真相与 63 个 MCP 工具。
+
+## 许可证
+
+本仓库代码采用 [MIT License](LICENSE)。第三方依赖各自遵循其原有许可证（pymatgen / ASE / mp-api / MCP SDK 等）。
+
+**不包含、也不分发**：VASP 可执行程序与 POTCAR 赝势库（受 VASP 许可约束）、`clusters.json` 集群配置、SSH 私钥与任何凭据——相关路径均已列入 `.gitignore`。使用者需自行取得相应授权并填写本地配置。
 

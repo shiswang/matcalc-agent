@@ -31,9 +31,19 @@ clusters.json
 CLUSTERS.md
 remote_workdir_notes.md
 
-# �ֳ���ʱ�ű�������⣩
+# 现场临时脚本（不入库）
 server/_tmp_*.py
 *_tmp_*.py
 
 # Filled private handoff (template is committed)
 adapters/HANDOFF_PRIVATE.md
+
+# ---- 本地临时脚本 / 调试产物（不入库）----
+.tmp*/
+.tmp_*
+*.log
+.venv_ms/
+output/
+.aimd_watch*.sh
+.ms_watch*.sh
+.workbuddy/

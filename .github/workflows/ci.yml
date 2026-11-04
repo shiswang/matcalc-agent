@@ -36,5 +36,5 @@ jobs:
       - name: 引导测试用集群配置（clusters.json 不入库的既定红线）
         run: cp clusters.example.json clusters.json
 
-      - name: 全量回归（registry 62 工具契约锁 + campaign 脚本守卫）
+      - name: 全量回归（registry 63 工具契约锁 + campaign 脚本守卫）
         run: pytest tests/ -q --basetemp=.pytest_tmp_ci

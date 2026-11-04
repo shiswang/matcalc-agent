@@ -87,7 +87,8 @@ REM 编辑 nodes：host=user@ip、ssh_key、scheduler、queue、vasp_setup...
 ### Materials Project
 `fetch_mp_structure` · `mp_workflow_guide` · `mp_phase_diagram` · `mp_reaction_energy` · `mp_interface_reactions` · `mp_pourbaix_diagram`
 模板：`mp_relax_static` · `mp_relax_band`（relax→static→bands→dos）
-自动提交：`params_json=`{`poscar_text`: "...", `auto_submit`: true, `node`: "master"}
+自动提交：`params_json={"poscar_text": "...", "auto_submit": true, "node": "master"}`
+需要 `MP_API_KEY`；能力清单、无 key 行为与边界见 [`README.md`](README.md) 的「Materials Project（可选联网）」。
 
 ### 建模与结构
 `build_structure` · `parse_poscar` · `make_supercell` · `cleave_surface` ·

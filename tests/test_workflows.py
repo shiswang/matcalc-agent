@@ -275,3 +275,79 @@ def test_status_view_exposes_revision_for_cas(clean_wf):
     assert "expected_revision=" in view
     listed = mw.list_active_workflows(PROJ)
     assert "rev=" in listed
+
+
+# ---------- INCAR/KPOINTS params 覆盖（S7） ----------
+
+def test_incar_override_replace_and_append(clean_wf):
+    """params.incar：已有键原位替换（ISMEAR），新键追加（IVDW/ISPIN）。"""
+    out = mw.start_workflow(
+        "nmo_parent_compare", PROJ,
+        params_json={"incar": {"ISMEAR": 0, "SIGMA": 0.05, "IVDW": 12, "ISPIN": 2}},
+    )
+    wf = _extract_wfid(out)
+    d0 = Path(mw._step_dir(wf, PROJ, 0, "parent_relax"))
+    incar = (d0 / "INCAR").read_text(encoding="utf-8")
+    assert "IVDW = 12" in incar and "ISPIN = 2" in incar      # 新键追加
+    assert incar.count("ISMEAR =") == 1 and "ISMEAR = 0" in incar   # 原位替换不重复
+    assert incar.count("SIGMA =") == 1 and "SIGMA = 0.05" in incar
+
+
+def test_kpoints_param_overrides_default_grid(clean_wf):
+    """params.kpoints：覆盖默认 4×4×4 为 Gamma 3×3×1。"""
+    out = mw.start_workflow("nmo_parent_compare", PROJ, params_json={"kpoints": "3 3 1"})
+    wf = _extract_wfid(out)
+    d0 = Path(mw._step_dir(wf, PROJ, 0, "parent_relax"))
+    kpts = (d0 / "KPOINTS").read_text(encoding="utf-8")
+    assert "3 3 1" in kpts and "4 4 4" not in kpts
+
+
+def test_incar_and_kpoints_validation_rejected(clean_wf):
+    """非法 params.incar / params.kpoints：入口即报错且不产生任何文件。"""
+    o1 = mw.start_workflow("nmo_parent_compare", PROJ, params_json={"incar": "IVDW=12"})
+    o2 = mw.start_workflow("nmo_parent_compare", PROJ, params_json={"kpoints": "0 0 0"})
+    o3 = mw.start_workflow("nmo_parent_compare", PROJ, params_json={"kpoints": "3 3"})
+    for out in (o1, o2, o3):
+        assert out.startswith("错误") and "E_PARAM" in out
+    assert not (_proj_dir("workflows")).exists() or not list(_proj_dir("workflows").iterdir())
+
+
+def test_relax_template_mp_aligned(clean_wf):
+    """升级后的默认弛豫模板：MP 对齐参数齐备，且测试锁定的三行仍在。"""
+    out = mw.start_workflow("nmo_parent_compare", PROJ)
+    wf = _extract_wfid(out)
+    d0 = Path(mw._step_dir(wf, PROJ, 0, "parent_relax"))
+    incar = (d0 / "INCAR").read_text(encoding="utf-8")
+    for tag in ("IBRION = 2", "ISIF = 3", "NSW = 100",        # 测试锁定
+                "EDIFFG = -0.02", "PREC = Accurate", "LASPH = .TRUE."):
+        assert tag in incar, tag
+
+
+def test_static_dos_template_mp_aligned(clean_wf):
+    """升级后的静态 DOS 模板：四面体法 + LORBIT/NEDOS。"""
+    wf = _extract_wfid(mw.start_workflow("nmo_parent_compare", PROJ))
+    (Path(mw._step_dir(wf, PROJ, 0, "parent_relax")) / "OUTCAR").write_text(
+        "  free  energy   TOTEN  =        -1.00 eV\n", encoding="utf-8")
+    mw.advance_workflow(wf, PROJ)
+    d1 = Path(mw._step_dir(wf, PROJ, 1, "parent_dos"))
+    incar = (d1 / "INCAR").read_text(encoding="utf-8")
+    for tag in ("NSW = 0", "ISMEAR = -5", "LORBIT = 11", "NEDOS = 2001"):
+        assert tag in incar, tag
+
+
+def test_vasp_settle_takes_last_toten(clean_wf):
+    """OUTCAR 每个电子步都打 TOTEN 行（IVDW/5.4.4 实测）：结算必须取末次匹配。
+
+    首个匹配是初始原子叠加密度的垃圾能量（实测曾把 -670.48 结算成 2592）。
+    """
+    wf = _extract_wfid(mw.start_workflow("nmo_parent_compare", PROJ))
+    d0 = Path(mw._step_dir(wf, PROJ, 0, "parent_relax"))
+    (d0 / "OUTCAR").write_text(
+        "  free energy    TOTEN  =      2592.02425155 eV\n"   # 电子步 1（垃圾值）
+        "  free energy    TOTEN  =      -182.47461586 eV\n"   # 电子步 2
+        "  free  energy   TOTEN  =      -670.48108799 eV\n",  # 末次离子步（真值）
+        encoding="utf-8")
+    mw.advance_workflow(wf, PROJ)
+    st = _load(wf)
+    assert st["steps"][0]["status"] == "done"
+    assert st["steps"][0]["key_results"]["toten_eV"] == pytest.approx(-670.48108799)

@@ -22,7 +22,7 @@
 - **规模约定**：MCP 工具 **63 个**，由 `tests/test_registry.py` 断言锁定。
 - **当前科研线**：`024_CuFeMn`（P2 型 Na 层状氧化物，V 与 Cu 两条替代系列）——
   **V 系列按约定 +U 重算已全部完成并打包；Cu 系列 24 个缺陷同样已完成（弛豫 + 统一静态 + 形成能 + 复核 + 与 V 对比）**。
-- **验证状态**：全量 `pytest tests` **307 passed**（2026-10-20）；`scripts/smoke_local.ps1` 报 `SMOKE PASS` / 62 tools。
+- **验证状态**：全量 `pytest tests` **307 passed**（2026-10-20）；`scripts/smoke_local.ps1` 报 `SMOKE PASS` / 63 tools。
 
 ---
 
@@ -108,7 +108,7 @@ server/main.py            组装点：循环注册各模块 TOOLS（不含实现
 | `parsing.py` | OUTCAR / vasprun / DOSCAR / ACF 解析 |
 | `plotting.py` | DOS / PDOS / band 出图（图 + Origin 数据 txt） |
 | `jobs.py` | 远程提交、`submit_and_watch`、`check_job` |
-| `workflows.py` | workflow 状态机（start / advance / status）、路由与恢复摘要 |
+| `workflows.py` | workflow 状态机（start / advance / status）、路由与恢复摘要；vasp 步骤 INCAR/KPOINTS 已升级为 MP/atomate2 对齐模板，支持 params 覆盖（`params.incar` 覆盖/追加 INCAR 键、`params.kpoints` 覆盖默认 4×4×4 网格，band 高对称路径不受影响；start_workflow 入口校验） |
 | `conversation.py` | 对话层分类：普通聊天 / 新任务 / 继续 / 状态查询 |
 | `session_binding.py` | session→workflow 绑定（sidecar，不入 git） |
 | `workflow_events.py` | 事件 outbox / inbox / reconciler |
@@ -443,9 +443,9 @@ D:\personal_files\pycharm\Ai_model\orbitos          ← 主 Vault（唯一记忆
 | 项 | 状态 |
 |---|---|
 | Git | `main @ 9fc150b`（CI 依赖修复）；本次提交 `HANDOFF.md` |
-| 工具数 | 62（`tests/test_registry.py` 通过） |
+| 工具数 | 63（`tests/test_registry.py` 通过） |
 | 全量回归 | `pytest tests` **307 passed / 1 skipped**（写盘已重定向到临时沙箱，`server/outputs/` 不再被测试污染） |
-| 冒烟 | `smoke_local.ps1` PASS / 62 tools（重定向输出须 UTF-8，否则报 UnicodeEncodeError 假失败） |
+| 冒烟 | `smoke_local.ps1` PASS / 63 tools（重定向输出须 UTF-8，否则报 UnicodeEncodeError 假失败） |
 | CI | ✅ 2026-10-20 恢复绿色（此前 2026-08-30 之后 **36 次连续红**，根因 `requirements.txt` 缺 `mcp<2`，见 §11 依赖红线） |
 | V 系列 | ✅ 完成（statics 25/25、形成能 24 行、METHODS/README/zip 齐） |
 | Cu 系列 | ✅ 完成（静态 25/25、形成能 24 行、复核零偏差、与 V 对比已出、**zip 已出** 84.3 MB） |
@@ -589,7 +589,7 @@ git status --short; git diff --check
 
 | 内容 | 位置 |
 |---|---|
-| 使用说明 / 接入 | `README.md`、`MCP.md`（本次已把两处过期的"61 个工具"改为 62） |
+| 使用说明 / 接入 | `README.md`、`MCP.md`（当时把两处过期的"61 个工具"改为 62；当前契约已升至 63） |
 | Agent 硬规则 | `AGENTS.md` |
 | 集群运维档案（不入 git） | `CLUSTERS.md` |
 | 私密交接清单（不入 git） | `adapters/HANDOFF_PRIVATE.md` |

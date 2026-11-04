@@ -113,13 +113,23 @@ Direct
 0.500000000 0.500000000 0.500000000
 """
 
-# 最小弛豫 INCAR 模板（手写；完整参数化留待后续版本）
+# 弛豫 INCAR 模板（参考 MP/atomate2 RelaxMaker 约定：PREC/EDIFF/EDIFFG/
+# LASPH/LWAVE/LCHARG；ENCUT 不硬编码——MP 惯例走 POTCAR ENMAX，需要时用
+# params.incar 覆盖。IBRION/ISIF/NSW 三行被 test_workflows.py 锁定）
 _INCAR_RELAX = """\
-# workflows MVP 最小弛豫模板
+# workflows relax 模板（对齐 MP/atomate2 RelaxMaker 约定）
 SYSTEM = relax
+PREC = Accurate
+EDIFF = 1e-5
+EDIFFG = -0.02
 IBRION = 2
 ISIF = 3
 NSW = 100
+LREAL = Auto
+LASPH = .TRUE.
+NCORE = 4
+LWAVE = .FALSE.
+LCHARG = .FALSE.
 """
 
 # MP/atomate2 风格弛豫（对齐 MP RelaxMaker 常见约定）
@@ -152,12 +162,21 @@ LWAVE = .FALSE.
 LCHARG = .TRUE.
 """
 
-# 最小静态 DOS INCAR 模板（手写）
+# 静态 DOS INCAR 模板（参考 MP/atomate2 静态约定：四面体法 + 轨道投影 DOS）。
+# 默认 K 点为 4×4×4 Gamma 网格，ISMEAR=-5 可用；若用 params.kpoints 改成
+# 稀疏网格（如 Gamma 单点），需同步用 params.incar 把 ISMEAR 改为 0。
 _INCAR_STATIC_DOS = """\
-# workflows MVP 最小静态DOS模板
+# workflows static DOS 模板（对齐 MP/atomate2 静态约定）
 SYSTEM = static_dos
+PREC = Accurate
+EDIFF = 1e-6
 NSW = 0
+ISMEAR = -5
+SIGMA = 0.05
 LORBIT = 11
+NEDOS = 2001
+LWAVE = .FALSE.
+LCHARG = .TRUE.
 """
 
 # MP 风格 DOS（静态 + 轨道投影）
@@ -518,6 +537,52 @@ def _step_local_calc(state: dict, step: dict) -> str:
     return f"[{step['name']}] 本地计算完成（演示）"
 
 
+def _apply_incar_overrides(incar_text: str, params: Optional[dict]) -> str:
+    """params["incar"]（{"KEY": 值} dict）覆盖/追加 INCAR：已有键原位替换，新键集中追加。
+
+    用于不改代码调参（IVDW、偶极修正、ENCUT、ISMEAR 等）。start_workflow
+    已在入口校验类型与取值，这里只处理合法输入；键名大小写不敏感（统一大写）。
+    """
+    overrides = (params or {}).get("incar")
+    if not isinstance(overrides, dict) or not overrides:
+        return incar_text
+    pending = {str(k).strip().upper(): v for k, v in overrides.items()}
+    out: List[str] = []
+    for line in incar_text.rstrip("\n").splitlines():
+        s = line.strip()
+        m = None if s.startswith("#") else re.match(r"^([A-Za-z][A-Za-z0-9_]*)\s*=", s)
+        if m and m.group(1).upper() in pending:
+            k = m.group(1).upper()
+            out.append(f"{k} = {pending.pop(k)}")
+        else:
+            out.append(line)
+    if pending:
+        out.append("# --- params.incar 追加 ---")
+        for k, v in pending.items():
+            out.append(f"{k} = {v}")
+    return "\n".join(out) + "\n"
+
+
+def _kpoints_from_params(params: Optional[dict]) -> Optional[str]:
+    """params["kpoints"]（"3 3 1" 或 [3,3,1]）→ Gamma 中心 KPOINTS 文本。
+
+    未给或格式非法返回 None（非法值已在 start_workflow 入口拦截，这里兜底）。
+    """
+    kp = (params or {}).get("kpoints")
+    if kp is None:
+        return None
+    if isinstance(kp, str):
+        parts = kp.split()
+    elif isinstance(kp, (list, tuple)):
+        parts = [str(x) for x in kp]
+    else:
+        return None
+    if len(parts) != 3 or not all(p.isdigit() and int(p) > 0 for p in parts):
+        return None
+    n1, n2, n3 = (int(p) for p in parts)
+    return f"K-Points\n0\nGamma\n{n1} {n2} {n3}\n0 0 0\n"
+
+
 def _vasp_prepare(
     state: dict,
     step: dict,
@@ -529,12 +594,18 @@ def _vasp_prepare(
 
     POSCAR 取舍：params._poscar_validated_text 存在（S5 结构注入）→ 用真实结构；
     否则回退 NaCl 占位结构（auto_submit 护栏将拦截其上集群）。
+    INCAR/KPOINTS：params.incar 覆盖/追加 INCAR；params.kpoints 覆盖默认网格
+    （步骤专属 K 点如 band 高对称路径优先级更高）。
     """
     d = _step_dir(state["wf_id"], state["project"], _step_index(state, step), step["name"])
     os.makedirs(d, exist_ok=True)
-    real_poscar = (state.get("params") or {}).get("_poscar_validated_text") or ""
+    params = state.get("params") or {}
+    real_poscar = params.get("_poscar_validated_text") or ""
     poscar_final = real_poscar or _PLACEHOLDER_POSCAR
-    kpts = kpoints_text or _KPOINTS_GAMMA
+    # K 点优先级：步骤专属 K 点（如 band 高对称路径）> params.kpoints > 默认 4×4×4；
+    # INCAR 覆盖：params.incar 原位替换已有键 / 追加新键
+    kpts = kpoints_text or _kpoints_from_params(params) or _KPOINTS_GAMMA
+    incar_text = _apply_incar_overrides(incar_text, params)
     for fname, text in (("INCAR", incar_text), ("KPOINTS", kpts),
                         ("POSCAR", poscar_final)):
         with open(os.path.join(d, fname), "w", encoding="utf-8", newline="\n") as f:
@@ -563,11 +634,13 @@ def _vasp_settle(state: dict, step: dict) -> str:
                 "继续等待人工提交")
     with open(outcar, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
-    m = _TOTEN_RE.search(text)
-    if not m:
+    # 取最后一个 TOTEN：OUTCAR 在部分配置下（如 IVDW/5.4.4）每个电子步都打
+    # TOTEN 行，首个匹配是初始原子叠加密度的垃圾能量；最后一个才对应末次离子步。
+    matches = _TOTEN_RE.findall(text)
+    if not matches:
         step["note"] = "OUTCAR 已存在但未能解析出 TOTEN 行，请检查文件内容"
         return f"[{step['name']}] OUTCAR 无法解析 TOTEN，保持 waiting_submit"
-    toten = float(m.group(1))
+    toten = float(matches[-1])
     step["key_results"] = {"toten_eV": toten}
     step["status"] = "done"
     step["note"] = f"已从 OUTCAR 结算 TOTEN = {toten} eV"
@@ -970,6 +1043,12 @@ def start_workflow(template: str, project: str, params_json: Optional[Union[str,
             - "poscar_path": "<路径>" 或 "poscar_text": "<POSCAR 全文>" ——
               【S5 结构注入】启动期即校验解析；两者同给时 text 优先。
               注入后所有 vasp 步骤使用真实结构，auto_submit 的占位护栏自动放行。
+            - "incar": {"KEY": 值, ...} —— 覆盖/追加各 vasp 步骤 INCAR 参数
+              （已有键原位替换，新键追加，键名大小写不敏感）；
+              示例: {"IVDW": 12, "ISPIN": 2, "LDIPOL": ".TRUE."}
+            - "kpoints": "n1 n2 n3" 或 [n1,n2,n3] —— Gamma 中心网格，覆盖默认
+              4×4×4（band 步骤的高对称路径 K 点不受影响）；
+              示例: "3 3 1"
             示例: '{"E_O2": 2.0, "auto_submit": true, "ppn": 8}'
 
     Returns:
@@ -1025,6 +1104,29 @@ def start_workflow(template: str, project: str, params_json: Optional[Union[str,
                                     else os.path.abspath(os.path.expanduser(str(params["poscar_path"]))))
         params.pop("poscar_text", None)                  # 归一化：原键不重复留存大文本
         params.pop("poscar_path", None)
+
+    # INCAR/KPOINTS 覆盖参数：入口即校验，非法立即报错（不产生任何文件）。
+    # 实际生效在 _vasp_prepare：incar 覆盖各 vasp 步骤 INCAR，kpoints 覆盖默认网格。
+    if "incar" in params:
+        inc = params["incar"]
+        if not isinstance(inc, dict) or not all(
+            isinstance(k, str) and k.strip() and isinstance(v, (str, int, float, bool))
+            for k, v in inc.items()
+        ):
+            return ("错误：[E_PARAM] params.incar 需为 {\"KEY\": 值} 字典"
+                    "（值限字符串/数字/布尔）；示例: '{\"incar\": {\"IVDW\": 12}}'")
+    if "kpoints" in params:
+        kp = params["kpoints"]
+        if isinstance(kp, str):
+            parts = kp.split()
+            kpts_ok = len(parts) == 3 and all(p.isdigit() and int(p) > 0 for p in parts)
+        elif isinstance(kp, (list, tuple)):
+            kpts_ok = len(kp) == 3 and all(str(x).isdigit() and int(x) > 0 for x in kp)
+        else:
+            kpts_ok = False
+        if not kpts_ok:
+            return ("错误：[E_PARAM] params.kpoints 需为 \"n1 n2 n3\" 或 [n1,n2,n3]"
+                    "（正整数，Gamma 中心网格）；示例: '{\"kpoints\": \"3 3 1\"}'")
 
     wf_id = f"{template}_{int(time.time())}"
     state = {
@@ -1158,5 +1260,5 @@ def workflow_status(wf_id: str, project: str) -> str:
 
 
 # 面向 main.py 注册 MCP 工具的导出清单
-# list_active_workflows 是内部恢复/路由原语，不新增 MCP 工具，保持 62 工具契约。
+# list_active_workflows 是内部恢复/路由原语，不新增 MCP 工具，保持 63 工具契约。
 TOOLS = [start_workflow, advance_workflow, workflow_status]

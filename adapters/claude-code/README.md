@@ -4,7 +4,7 @@
 
 1. 复制为项目根 `.mcp.json`（或合并进已有 mcpServers）
 2. 重启 Claude Code / 客户端
-3. 确认出现 `matcalc` 服务器与 62 个工具
+3. 确认出现 `matcalc` 服务器与 63 个工具
 
 验收：在客户端里调用 `build_structure`，或仓库根执行 `scripts\smoke_local.ps1`。
 
