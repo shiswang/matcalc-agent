@@ -56,6 +56,11 @@
 - **LDAUL/LDAUU/LDAUJ 长度必须等于 POSCAR 物种数**，且与物种序一一对应。
 - **提交后 30 秒四查**：total cores / LDAU 长度 / POTCAR TITEL 序 / qstat ppn。
 
+## 赝势与 U 值（必须遵守）
+
+- 任何 VASP 建模/提交前先读 [`docs/赝势与U值准则.md`](docs/赝势与U值准则.md)（源自 Materials Project 官方方法学，已转写为本项目的 `[必须]` 条目）。
+- 要点：`potcar_elements` 用**带后缀目录名**（如 `Na_pv`/`Mn_pv`/`Fe_pv`，非裸元素符号），按 POSCAR 元素序拼接；对接 MP 时 8 种过渡金属氧化物/氟化物用官方 U 值（Co 3.32 / Cr 3.70 / Fe 5.30 / Mn 3.90 / Mo 4.38 / Ni 6.20 / V 3.25 / W 6.20，仅 d 轨道）；`suggest_u` 的值是**建议、非 MP 标准**，不得混称。
+
 ## 提交前自检
 
 ```text
